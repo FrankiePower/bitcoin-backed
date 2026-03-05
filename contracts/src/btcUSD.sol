@@ -76,7 +76,7 @@ contract BtcUSD is ERC20, ERC20Burnable, Ownable, IERC165 {
      * @notice Set the CDPCore contract address and grant it mint/burn roles.
      * @param _cdpCore The CDPCore contract address
      */
-    function setCDPCore(address _cdpCore) external onlyOwner {
+    function setCdpCore(address _cdpCore) external onlyOwner {
         if (_cdpCore == address(0)) revert ZeroAddress();
 
         // Remove old CDPCore roles if set
@@ -184,9 +184,7 @@ contract BtcUSD is ERC20, ERC20Burnable, Ownable, IERC165 {
      * @notice ERC165 interface support for CCIP TokenPool compatibility
      */
     function supportsInterface(bytes4 interfaceId) public pure override returns (bool) {
-        return
-            interfaceId == type(IERC20).interfaceId ||
-            interfaceId == type(IBurnMintERC20).interfaceId ||
-            interfaceId == type(IERC165).interfaceId;
+        return interfaceId == type(IERC20).interfaceId || interfaceId == type(IBurnMintERC20).interfaceId
+            || interfaceId == type(IERC165).interfaceId;
     }
 }

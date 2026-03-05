@@ -14,21 +14,21 @@ contract CDPCore is Ownable {
 
     /// @notice Attestation data from CRE workflow
     struct VaultAttestation {
-        bytes32 txid;           // Bitcoin txid (32 bytes)
-        uint64 amountSat;       // BTC amount in satoshis
-        uint32 blockHeight;     // Bitcoin block height of confirmation
-        uint256 btcPriceUSD;    // BTC/USD price (8 decimals from Chainlink)
-        uint256 timestamp;      // Attestation timestamp
-        address depositor;      // EVM address that owns this vault
+        bytes32 txid; // Bitcoin txid (32 bytes)
+        uint64 amountSat; // BTC amount in satoshis
+        uint32 blockHeight; // Bitcoin block height of confirmation
+        uint256 btcPriceUsd; // BTC/USD price (8 decimals from Chainlink)
+        uint256 timestamp; // Attestation timestamp
+        address depositor; // EVM address that owns this vault
     }
 
     /// @notice User vault state
     struct Vault {
-        uint256 collateralSat;  // Total attested BTC in satoshis
-        uint256 debtUSD;        // Minted btcUSD (18 decimals)
-        uint256 lastAttested;   // Timestamp of last valid CRE report
-        uint256 lastBtcPrice;   // Last attested BTC price (8 decimals)
-        bool active;            // Whether vault is active
+        uint256 collateralSat; // Total attested BTC in satoshis
+        uint256 debtUsd; // Minted btcUSD (18 decimals)
+        uint256 lastAttested; // Timestamp of last valid CRE report
+        uint256 lastBtcPrice; // Last attested BTC price (8 decimals)
+        bool active; // Whether vault is active
     }
 
     // ============ Constants ============
@@ -47,7 +47,7 @@ contract CDPCore is Ownable {
 
     // ============ State ============
 
-    BtcUSD public btcUSD;
+    BtcUSD public btcUsd;
 
     /// @notice Keystone Forwarder addresses allowed to submit reports
     mapping(address => bool) public allowedKeystoneForwarders;
@@ -64,11 +64,7 @@ contract CDPCore is Ownable {
     // ============ Events ============
 
     event VaultAttested(
-        address indexed depositor,
-        bytes32 indexed txid,
-        uint64 amountSat,
-        uint256 btcPriceUSD,
-        uint32 blockHeight
+        address indexed depositor, bytes32 indexed txid, uint64 amountSat, uint256 btcPriceUsd, uint32 blockHeight
     );
 
     event BtcUSDMinted(address indexed user, uint256 amount, uint256 newDebt);
@@ -103,9 +99,9 @@ contract CDPCore is Ownable {
 
     // ============ Constructor ============
 
-    constructor(address _btcUSD) Ownable(msg.sender) {
-        if (_btcUSD == address(0)) revert ZeroAddress();
-        btcUSD = BtcUSD(_btcUSD);
+    constructor(address _btcUsd) Ownable(msg.sender) {
+        if (_btcUsd == address(0)) revert ZeroAddress();
+        btcUsd = BtcUSD(_btcUsd);
     }
 
     // ============ Admin Functions ============
@@ -157,14 +153,14 @@ contract CDPCore is Ownable {
         Vault storage vault = vaults[attestation.depositor];
         vault.collateralSat += attestation.amountSat;
         vault.lastAttested = attestation.timestamp;
-        vault.lastBtcPrice = attestation.btcPriceUSD;
+        vault.lastBtcPrice = attestation.btcPriceUsd;
         vault.active = true;
 
         emit VaultAttested(
             attestation.depositor,
             attestation.txid,
             attestation.amountSat,
-            attestation.btcPriceUSD,
+            attestation.btcPriceUsd,
             attestation.blockHeight
         );
     }
@@ -173,10 +169,10 @@ contract CDPCore is Ownable {
 
     /**
      * @notice Mint btcUSD against attested collateral
-     * @param amountUSD Amount of btcUSD to mint (18 decimals)
+     * @param amountUsd Amount of btcUSD to mint (18 decimals)
      */
-    function mintBTCUSD(uint256 amountUSD) external {
-        if (amountUSD == 0) revert ZeroAmount();
+    function mintBtcUsd(uint256 amountUsd) external {
+        if (amountUsd == 0) revert ZeroAmount();
 
         Vault storage vault = vaults[msg.sender];
 
@@ -186,7 +182,7 @@ contract CDPCore is Ownable {
         }
 
         // Calculate new debt
-        uint256 newDebt = vault.debtUSD + amountUSD;
+        uint256 newDebt = vault.debtUsd + amountUsd;
 
         // Check health factor after mint
         uint256 hf = _calculateHealthFactor(vault.collateralSat, newDebt, vault.lastBtcPrice);
@@ -195,30 +191,30 @@ contract CDPCore is Ownable {
         }
 
         // Update debt and mint
-        vault.debtUSD = newDebt;
-        btcUSD.mint(msg.sender, amountUSD);
+        vault.debtUsd = newDebt;
+        btcUsd.mint(msg.sender, amountUsd);
 
-        emit BtcUSDMinted(msg.sender, amountUSD, newDebt);
+        emit BtcUSDMinted(msg.sender, amountUsd, newDebt);
     }
 
     /**
      * @notice Repay btcUSD debt
-     * @param amountUSD Amount to repay (18 decimals)
+     * @param amountUsd Amount to repay (18 decimals)
      */
-    function repay(uint256 amountUSD) external {
-        if (amountUSD == 0) revert ZeroAmount();
+    function repay(uint256 amountUsd) external {
+        if (amountUsd == 0) revert ZeroAmount();
 
         Vault storage vault = vaults[msg.sender];
-        if (vault.debtUSD == 0) revert NoDebtToRepay();
+        if (vault.debtUsd == 0) revert NoDebtToRepay();
 
         // Cap repayment at actual debt
-        uint256 actualRepay = amountUSD > vault.debtUSD ? vault.debtUSD : amountUSD;
+        uint256 actualRepay = amountUsd > vault.debtUsd ? vault.debtUsd : amountUsd;
 
         // Burn tokens and reduce debt
-        btcUSD.burnFrom(msg.sender, actualRepay);
-        vault.debtUSD -= actualRepay;
+        btcUsd.burnFrom(msg.sender, actualRepay);
+        vault.debtUsd -= actualRepay;
 
-        emit BtcUSDRepaid(msg.sender, actualRepay, vault.debtUSD);
+        emit BtcUSDRepaid(msg.sender, actualRepay, vault.debtUsd);
     }
 
     /**
@@ -228,17 +224,17 @@ contract CDPCore is Ownable {
     function liquidate(address user) external {
         Vault storage vault = vaults[user];
 
-        uint256 hf = _calculateHealthFactor(vault.collateralSat, vault.debtUSD, vault.lastBtcPrice);
+        uint256 hf = _calculateHealthFactor(vault.collateralSat, vault.debtUsd, vault.lastBtcPrice);
         if (hf >= 100) revert VaultHealthy();
 
-        uint256 debtToLiquidate = vault.debtUSD;
+        uint256 debtToLiquidate = vault.debtUsd;
 
         // Liquidator must have enough btcUSD to cover the debt
-        btcUSD.burnFrom(msg.sender, debtToLiquidate);
+        btcUsd.burnFrom(msg.sender, debtToLiquidate);
 
         // Clear the vault (in a real system, collateral would be distributed to liquidator)
         // For hackathon: we just clear the debt and collateral record
-        vault.debtUSD = 0;
+        vault.debtUsd = 0;
         vault.collateralSat = 0;
         vault.active = false;
 
@@ -254,7 +250,7 @@ contract CDPCore is Ownable {
      */
     function healthFactor(address user) external view returns (uint256) {
         Vault storage vault = vaults[user];
-        return _calculateHealthFactor(vault.collateralSat, vault.debtUSD, vault.lastBtcPrice);
+        return _calculateHealthFactor(vault.collateralSat, vault.debtUsd, vault.lastBtcPrice);
     }
 
     /**
@@ -270,26 +266,18 @@ contract CDPCore is Ownable {
      * @notice Get vault details for a user
      * @param user Address of the vault owner
      * @return collateralSat Total collateral in satoshis
-     * @return debtUSD Total debt in btcUSD (18 decimals)
+     * @return debtUsd Total debt in btcUSD (18 decimals)
      * @return lastAttested Timestamp of last attestation
      * @return lastBtcPrice Last attested BTC price
      * @return active Whether vault is active
      */
-    function getVault(address user) external view returns (
-        uint256 collateralSat,
-        uint256 debtUSD,
-        uint256 lastAttested,
-        uint256 lastBtcPrice,
-        bool active
-    ) {
+    function getVault(address user)
+        external
+        view
+        returns (uint256 collateralSat, uint256 debtUsd, uint256 lastAttested, uint256 lastBtcPrice, bool active)
+    {
         Vault storage vault = vaults[user];
-        return (
-            vault.collateralSat,
-            vault.debtUSD,
-            vault.lastAttested,
-            vault.lastBtcPrice,
-            vault.active
-        );
+        return (vault.collateralSat, vault.debtUsd, vault.lastAttested, vault.lastBtcPrice, vault.active);
     }
 
     // ============ Internal Functions ============
@@ -299,26 +287,26 @@ contract CDPCore is Ownable {
      * @dev hf = (collateral_usd * 10000) / (debt_usd * MCR)
      *      hf >= 100 means safe
      * @param collateralSat Collateral in satoshis
-     * @param debtUSD Debt in btcUSD (18 decimals)
-     * @param btcPriceUSD BTC price (8 decimals)
+     * @param debtUsd Debt in btcUSD (18 decimals)
+     * @param btcPriceUsd BTC price (8 decimals)
      * @return Health factor (100 = at MCR)
      */
-    function _calculateHealthFactor(
-        uint256 collateralSat,
-        uint256 debtUSD,
-        uint256 btcPriceUSD
-    ) internal pure returns (uint256) {
-        if (debtUSD == 0) return type(uint256).max;
+    function _calculateHealthFactor(uint256 collateralSat, uint256 debtUsd, uint256 btcPriceUsd)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (debtUsd == 0) return type(uint256).max;
 
-        // collateralUSD = (collateralSat * btcPriceUSD) / SATS_PER_BTC
+        // collateralUsd = (collateralSat * btcPriceUsd) / SATS_PER_BTC
         // Both have 8 decimals from Chainlink, result needs to be in 18 decimals like debt
-        // btcPriceUSD is 8 decimals, collateralSat is in sats (8 decimal representation of BTC)
-        // So collateralUSD = collateralSat * btcPriceUSD / 1e8 gives us 8 decimal USD
+        // btcPriceUsd is 8 decimals, collateralSat is in sats (8 decimal representation of BTC)
+        // So collateralUsd = collateralSat * btcPriceUsd / 1e8 gives us 8 decimal USD
         // We need to scale to 18 decimals: multiply by 1e10
-        uint256 collateralUSD = (collateralSat * btcPriceUSD * 1e10) / SATS_PER_BTC;
+        uint256 collateralUsd = (collateralSat * btcPriceUsd * 1e10) / SATS_PER_BTC;
 
-        // hf = (collateralUSD * 10000) / (debtUSD * MCR)
+        // hf = (collateralUsd * 10000) / (debtUsd * MCR)
         // Result is basis points where 100 = exactly at MCR
-        return (collateralUSD * 10000) / (debtUSD * MCR);
+        return (collateralUsd * 10000) / (debtUsd * MCR);
     }
 }
