@@ -1,0 +1,23 @@
+# ==========================================================================
+# btcUSD WORKFLOW SETTINGS
+# ==========================================================================
+# Bitcoin attestation workflow for btcUSD stablecoin.
+# Monitors Bitcoin vault, verifies deposits, submits attestations to CDPCore.
+
+# ==========================================================================
+staging-settings:
+  user-workflow:
+    workflow-name: "btcusd-attestation"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.json"
+    secrets-path: ""
+
+# ==========================================================================
+production-settings:
+  user-workflow:
+    workflow-name: "btcusd-attestation"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.json"
+    secrets-path: ""

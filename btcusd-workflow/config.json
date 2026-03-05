@@ -1,0 +1,12 @@
+{
+  "schedule": "0 */2 * * * *",
+  "vaultAddress": "tb1qexamplebitcoinvaultaddress",
+  "depositorAddress": "0x0000000000000000000000000000000000000000",
+  "confirmationsRequired": 6,
+  "network": {
+    "chainName": "ethereum-testnet-sepolia-base-1",
+    "cdpCoreAddress": "0x0000000000000000000000000000000000000000",
+    "btcUsdFeedAddress": "0x0FB99723Aee6f420beAD13e6bBB79b7E6F034298",
+    "gasLimit": "500000"
+  }
+}

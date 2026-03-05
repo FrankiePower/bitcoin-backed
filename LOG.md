@@ -304,3 +304,126 @@ With CDP logic only on Base Sepolia, here's what users can/cannot do:
 - ❌ Cannot be liquidated
 
 **Key Insight:** btcUSD on secondary chains is just a bridged token — all collateral/debt management must happen on Base.
+
+---
+
+## Session 2 — March 5, 2026
+
+### Phase 2 Complete: CRE Workflow
+
+Transformed the APY rebalancer template into a Bitcoin attestation workflow for btcUSD.
+
+---
+
+### Workflow Structure
+
+```
+btcusd-workflow/
+├── main.ts                    ✓ Bitcoin attestation workflow
+├── config.json                ✓ Base Sepolia config (placeholder addresses)
+├── workflow.yaml              ✓ Staging/production targets
+├── package.json               ✓ Dependencies configured
+└── contracts/abi/
+    ├── CDPCore.ts             ✓ ABI for isAttested(), getVault()
+    ├── PriceFeedAggregator.ts ✓ ABI for latestAnswer()
+    └── index.ts               ✓ Exports
+```
+
+---
+
+### Workflow Flow
+
+```
+Every 2 minutes (Cron trigger):
+  1. Fetch UTXOs from Blockstream API (testnet)
+     GET https://blockstream.info/testnet/api/address/{vault}/utxo
+
+  2. Filter confirmed UTXOs (6+ confirmations)
+     - Check status.confirmed == true
+     - Calculate confirmations from current block height
+
+  3. DON Consensus on external data
+     - consensusIdenticalAggregation ensures all nodes agree
+
+  4. Check if already attested
+     - evmClient.callContract(CDPCore.isAttested(txid))
+     - Skip already-processed UTXOs
+
+  5. Read BTC/USD price from Chainlink
+     - evmClient.callContract(PriceFeedAggregator.latestAnswer())
+     - Base Sepolia feed: 0x0FB99723Aee6f420beAD13e6bBB79b7E6F034298
+
+  6. Encode VaultAttestation struct
+     - encodeAbiParameters(txid, amountSat, blockHeight, btcPriceUsd, timestamp, depositor)
+
+  7. Generate DON-signed report
+     - runtime.report() with EVM encoder + ECDSA signing
+
+  8. Submit to CDPCore
+     - evmClient.writeReport() via Keystone Forwarder
+```
+
+---
+
+### Key Implementation Details
+
+**Blockstream API Integration:**
+```typescript
+const fetchBlockstreamUTXOs = (sendRequester, vaultAddress) => {
+  const url = `https://blockstream.info/testnet/api/address/${vaultAddress}/utxo`
+  const resp = sendRequester.sendRequest({ url, method: 'GET' }).result()
+  return json(resp) as BlockstreamUTXO[]
+}
+```
+
+**DON Consensus on External Data:**
+```typescript
+const utxosJson = httpClient
+  .sendRequest(runtime, fetchUTXOsForConsensus, consensusIdenticalAggregation<string>())(config)
+  .result()
+```
+
+**Chainlink Price Feed Read:**
+```typescript
+const readBtcUsdPrice = (runtime, evmClient) => {
+  const callData = encodeFunctionData({
+    abi: PriceFeedAggregator,
+    functionName: 'latestAnswer',
+  })
+  const resp = evmClient.callContract(runtime, { ... }).result()
+  return decodeFunctionResult({ abi: PriceFeedAggregator, ... })
+}
+```
+
+---
+
+### Simulation Test
+
+```bash
+cre workflow simulate ./btcusd-workflow --target staging-settings
+```
+
+**Output:**
+```
+✓ Workflow compiled
+[SIMULATION] Simulator Initialized
+[SIMULATION] Running trigger trigger=cron-trigger@1.0.0
+[USER LOG] === btcUSD Bitcoin Attestation Workflow ===
+[USER LOG] Vault address: tb1qexamplebitcoinvaultaddress
+[USER LOG] Min confirmations: 6
+[USER LOG] Fetching UTXOs from Blockstream API...
+```
+
+Workflow compiles and triggers correctly. API call fails on placeholder address — expected until real testnet addresses configured.
+
+---
+
+### Next Steps
+
+- [x] **Phase 2:** CRE workflow complete
+- [ ] **Phase 1e:** Deploy contracts to Base Sepolia
+- [ ] Update config.json with deployed addresses
+- [ ] Create Bitcoin testnet vault + fund with testnet BTC
+- [ ] Run full simulation with real addresses
+- [ ] **Phase 4:** Demo prep + video
+- [ ] **Phase 5:** README, submission
