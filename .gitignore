@@ -7,3 +7,4 @@ coverage
 /reference
 contracts/broadcast/
 btcusd-workflow/.cre_build_tmp.js
+contracts/broadcast/
