@@ -1,88 +1,158 @@
-<div style="text-align:center" align="center">
-    <a href="https://chain.link" target="_blank">
-        <img src="https://raw.githubusercontent.com/smartcontractkit/chainlink/develop/docs/logo-chainlink-blue.svg" width="225" alt="Chainlink logo">
-    </a>
+# btcUSD — Bitcoin-Backed Stablecoin with Chainlink CRE
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/smartcontractkit/cre-templates/blob/main/LICENSE)
-[![CRE Home](https://img.shields.io/static/v1?label=CRE&message=Home&color=blue)](https://chain.link/chainlink-runtime-environment)
-[![CRE Documentation](https://img.shields.io/static/v1?label=CRE&message=Docs&color=blue)](https://docs.chain.link/cre)
+A Bitcoin-collateralized stablecoin using Chainlink CRE (Chainlink Runtime Environment) for trustless Bitcoin deposit attestation and Chainlink Price Feeds for BTC/USD pricing.
 
-</div>
+## Overview
 
-## Trying out the Multi-Chain Token Manager Template
+btcUSD enables users to deposit Bitcoin on the Bitcoin network and mint USD-pegged stablecoins on EVM chains. The system uses Chainlink's decentralized oracle network to verify Bitcoin deposits and price collateral.
 
-This template provides end-to-end example of how to maximize supply APY by rebalancing tokens cross-chain with CRE via CCIP. It serves as a starting point for writing your own multi-chain token manager with the Chainlink Runtime Environment (CRE).
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Bitcoin       │     │  Chainlink CRE  │     │   Base Sepolia  │
+│   Testnet4      │────▶│  (DON Consensus)│────▶│   (CDPCore)     │
+│                 │     │                 │     │                 │
+│ User deposits   │     │ Attests UTXOs   │     │ Mints btcUSD    │
+│ BTC to vault    │     │ + BTC/USD price │     │ against collat  │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+```
 
-Follow the steps below to run the examples:
+## Chainlink Integration
 
-### 1. CRE CLI
+This project uses three Chainlink services:
 
-Install the [CRE CLI](https://docs.chain.link/cre).
+| Service | Purpose | File |
+|---------|---------|------|
+| **Chainlink CRE** | Bitcoin attestation workflow | [`btcusd-workflow/main.ts`](btcusd-workflow/main.ts) |
+| **Chainlink Price Feeds** | BTC/USD oracle | [`btcusd-workflow/main.ts:170-199`](btcusd-workflow/main.ts#L170-L199) |
+| **Chainlink CCIP** | Cross-chain btcUSD bridging (ready) | [`contracts/src/btcUSD.sol`](contracts/src/btcUSD.sol) |
 
-### 2. Install dependencies
+### Files Using Chainlink
 
-If **Bun** is not already installed, follow the instructions at: [https://bun.com/docs/installation](https://bun.com/docs/installation)
+| File | Chainlink Usage |
+|------|-----------------|
+| [`btcusd-workflow/main.ts`](btcusd-workflow/main.ts) | CRE workflow, HTTPClient, EVMClient, consensusIdenticalAggregation, Price Feed read |
+| [`btcusd-workflow/contracts/abi/PriceFeedAggregator.ts`](btcusd-workflow/contracts/abi/PriceFeedAggregator.ts) | Chainlink Price Feed ABI |
+| [`contracts/src/btcUSD.sol`](contracts/src/btcUSD.sol) | IBurnMintERC20 interface for CCIP TokenPool compatibility |
+| [`contracts/src/CDPCore.sol`](contracts/src/CDPCore.sol) | Receives CRE attestations via Keystone Forwarder |
+| [`contracts/script/ConfigureCDPCore.s.sol`](contracts/script/ConfigureCDPCore.s.sol) | Sets Keystone Forwarder address |
 
-From your project root, run:
+## How It Works
+
+### 1. Bitcoin Deposit
+User sends BTC to a monitored vault address on Bitcoin Testnet4.
+
+### 2. CRE Attestation
+The CRE workflow runs every 2 minutes:
+- Fetches UTXOs from mempool.space API
+- Verifies 6+ confirmations
+- Reads BTC/USD price from Chainlink Price Feeds
+- Achieves DON consensus on the data
+- Submits signed attestation to CDPCore
+
+### 3. Mint btcUSD
+User calls `mintBtcUsd()` on CDPCore to mint stablecoins against their attested collateral (150% minimum collateral ratio).
+
+## Deployed Contracts (Base Sepolia)
+
+| Contract | Address |
+|----------|---------|
+| **BtcUSD** | [`0xA5FCD5d200f949F7e78D4c7771F602aa4B0e387A`](https://sepolia.basescan.org/address/0xA5FCD5d200f949F7e78D4c7771F602aa4B0e387A) |
+| **CDPCore** | [`0x4F545CE997b7A5fEA9101053596D4834Bc882c7f`](https://sepolia.basescan.org/address/0x4F545CE997b7A5fEA9101053596D4834Bc882c7f) |
+
+## Quick Start
+
+### Prerequisites
+- [CRE CLI](https://docs.chain.link/cre)
+- [Foundry](https://book.getfoundry.sh/)
+- [Bun](https://bun.sh/)
+
+### Run Simulation
 
 ```bash
-bun install --cwd ./my-workflow
+# Install dependencies
+bun install --cwd ./btcusd-workflow
+
+# Simulate the workflow
+cre workflow simulate ./btcusd-workflow --target staging-settings
 ```
 
-### 3. Update .env file
-
-You need to add a private key to the .env file. This is specifically required if you want to simulate chain writes. For that to work the key should be valid and funded.
-If your workflow does not do any chain write then you can just put any dummy key as a private key. e.g.
-```
-CRE_ETH_PRIVATE_KEY=0000000000000000000000000000000000000000000000000000000000000001
-```
-
-### 4. Configure RPC endpoints
-
-For local simulation to interact with a chain, you must specify RPC endpoints for the chains you interact with in the `project.yaml` file. This is required for submitting transactions and reading blockchain state.
-
-Note: The following 7 chains are supported in local simulation (both testnet and mainnet variants):
-- Ethereum (`ethereum-testnet-sepolia`, `ethereum-mainnet`)
-- Base (`ethereum-testnet-sepolia-base-1`, `ethereum-mainnet-base-1`)
-- Avalanche (`avalanche-testnet-fuji`, `avalanche-mainnet`)
-- Polygon (`polygon-testnet-amoy`, `polygon-mainnet`)
-- BNB Chain (`binance-smart-chain-testnet`, `binance-smart-chain-mainnet`)
-- Arbitrum (`ethereum-testnet-sepolia-arbitrum-1`, `ethereum-mainnet-arbitrum-1`)
-- Optimism (`ethereum-testnet-sepolia-optimism-1`, `ethereum-mainnet-optimism-1`)
-
-Add your preferred RPCs under the `rpcs` section. For chain names, refer to https://github.com/smartcontractkit/chain-selectors/blob/main/selectors.yml
-
-```yaml
-rpcs:
-  - chain-name: ethereum-testnet-sepolia
-    url: <Your RPC endpoint to ETH Sepolia>
-```
-Ensure the provided URLs point to valid RPC endpoints for the specified chains. You may use public RPC providers or set up your own node.
-
-### 5. [Optional] Deploy contracts
-
-This step can be skipped if you are only going to test against local simulation.
-
-Follow instructions in [../contracts/README.md](../contracts/README.md) to deploy your own versions of the contracts.
-
-### 6. [Optional] Configure workflow
-
-Only required if you would like to test different configurations or if you deployed
-your own contracts in step 4.
-
-Configure [config.json](./workflow/config.json) for the workflow
-- `schedule` should be set to `"0 */5 * * * *"` for every 5 minutes or any other cron expression you prefer
-- `minBPSDeltaForRebalance` minimum basis points difference in APR for tokens to be rebalanced cross-chain
-- `assetAddress` CCIP CCT address; currently set to CCIP BnM token
-- `poolAddress` should be the MockPool contract address
-- `protocolSmartWalletAddress` should be the ProtocolSmartWallet contract address
-- `chainName` should be name of selected chain (refer to https://github.com/smartcontractkit/chain-selectors/blob/main/selectors.yml)
-- `gasLimit` should be the gas limit of chain write
-
-### 7. Simulate the workflow
-
-Run the command from the **project root** and pass the **path to the workflow directory**:
+### Run Demo (End-to-End)
 
 ```bash
-cre workflow simulate workflow
+cd contracts
+
+# Set environment
+export CRE_ETH_PRIVATE_KEY="0x<your-private-key>"
+
+# Run demo flow (attests UTXOs + mints btcUSD)
+forge script script/DemoFlow.s.sol:DemoFlowScript \
+  --rpc-url https://base-sepolia-rpc.publicnode.com \
+  --broadcast
 ```
+
+## Security Model & Limitations
+
+### Current Implementation (v1 - Hackathon Demo)
+
+| Aspect | Status | Notes |
+|--------|--------|-------|
+| Bitcoin attestation | ✅ Working | CRE verifies UTXOs exist |
+| Price oracle | ✅ Working | Chainlink BTC/USD feed |
+| CDP mechanics | ✅ Working | 150% MCR, liquidation |
+| **BTC custody enforcement** | ⚠️ **Not implemented** | See below |
+
+### ⚠️ Important Limitation
+
+**This is a proof-of-concept.** The current design attests that BTC exists at a vault address but does NOT enforce custody:
+
+```
+Current Model:
+1. User deposits BTC to vault address
+2. CRE attests the UTXO exists
+3. User mints btcUSD
+4. ⚠️ User could move BTC (no on-chain enforcement)
+```
+
+**Production implementation would require:**
+- P2WSH/P2TR scripts with spending conditions
+- DLC-style (Discreet Log Contract) custody
+- BitVM or ZK-proof based verification
+
+### Production Roadmap (v2)
+
+For trustless BTC custody, future versions would implement:
+
+1. **DLC-based locking** - BTC locked in 2-of-2 multisig with oracle-signed spending conditions
+2. **UTXO monitoring** - CRE detects if collateral UTXOs are spent, triggers liquidation
+3. **P2WSH scripts** - Bitcoin-native spending conditions tied to EVM debt state
+
+## Project Structure
+
+```
+bitcoin-backed/
+├── btcusd-workflow/           # CRE workflow
+│   ├── main.ts                # Bitcoin attestation logic
+│   ├── config.json            # Vault address, chain config
+│   └── contracts/abi/         # CDPCore, PriceFeed ABIs
+├── contracts/                 # Solidity contracts
+│   ├── src/
+│   │   ├── btcUSD.sol         # ERC20 + CCIP compatible
+│   │   └── CDPCore.sol        # CDP logic + CRE receiver
+│   └── script/
+│       ├── Deploy.s.sol       # Deployment script
+│       ├── ConfigureCDPCore.s.sol  # Keystone setup
+│       └── DemoFlow.s.sol     # End-to-end demo
+├── project.yaml               # CRE project config
+└── README.md                  # This file
+```
+
+## References
+
+- [Chainlink CRE Documentation](https://docs.chain.link/cre)
+- [Chainlink Price Feeds](https://docs.chain.link/data-feeds)
+- [Chainlink CCIP](https://docs.chain.link/ccip)
+- [DLC Specifications](https://github.com/discreetlogcontracts/dlcspecs) - Future custody model
+
+## License
+
+MIT
