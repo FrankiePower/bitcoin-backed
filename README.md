@@ -30,11 +30,12 @@ This project uses three Chainlink services:
 
 | File | Chainlink Usage |
 |------|-----------------|
-| [`btcusd-workflow/main.ts`](btcusd-workflow/main.ts) | CRE workflow, HTTPClient, EVMClient, consensusIdenticalAggregation, Price Feed read |
+| [`btcusd-workflow/main.ts`](btcusd-workflow/main.ts) | CRE workflow, HTTPClient, EVMClient, consensusIdenticalAggregation, Price Feed read, liquidation monitoring |
 | [`btcusd-workflow/contracts/abi/PriceFeedAggregator.ts`](btcusd-workflow/contracts/abi/PriceFeedAggregator.ts) | Chainlink Price Feed ABI |
 | [`contracts/src/btcUSD.sol`](contracts/src/btcUSD.sol) | IBurnMintERC20 interface for CCIP TokenPool compatibility |
 | [`contracts/src/CDPCore.sol`](contracts/src/CDPCore.sol) | Receives CRE attestations via Keystone Forwarder |
 | [`contracts/script/ConfigureCDPCore.s.sol`](contracts/script/ConfigureCDPCore.s.sol) | Sets Keystone Forwarder address |
+| [`contracts/script/CCIPBridgeDemo.s.sol`](contracts/script/CCIPBridgeDemo.s.sol) | CCIP burn-and-mint bridging demo |
 
 ## How It Works
 
@@ -48,9 +49,16 @@ The CRE workflow runs every 2 minutes:
 - Reads BTC/USD price from Chainlink Price Feeds
 - Achieves DON consensus on the data
 - Submits signed attestation to CDPCore
+- **Checks vault health and detects liquidatable positions**
 
 ### 3. Mint btcUSD
 User calls `mintBtcUsd()` on CDPCore to mint stablecoins against their attested collateral (150% minimum collateral ratio).
+
+### 4. Liquidation Monitoring
+The same workflow also monitors vault health:
+- Reads `healthFactor()` from CDPCore after each attestation cycle
+- If health factor < 100 (undercollateralized), logs liquidation warning
+- Enables automated liquidation bots to act on unhealthy positions
 
 ## Deployed Contracts (Base Sepolia)
 
@@ -90,6 +98,17 @@ forge script script/DemoFlow.s.sol:DemoFlowScript \
   --broadcast
 ```
 
+### Run CCIP Bridge Demo
+
+```bash
+cd contracts
+
+# Demonstrates btcUSD burn-and-mint CCIP capability
+forge script script/CCIPBridgeDemo.s.sol:CCIPBridgeDemo \
+  --rpc-url https://base-sepolia-rpc.publicnode.com \
+  --broadcast
+```
+
 ## Security Model & Limitations
 
 ### Current Implementation (v1 - Hackathon Demo)
@@ -99,6 +118,8 @@ forge script script/DemoFlow.s.sol:DemoFlowScript \
 | Bitcoin attestation | ✅ Working | CRE verifies UTXOs exist |
 | Price oracle | ✅ Working | Chainlink BTC/USD feed |
 | CDP mechanics | ✅ Working | 150% MCR, liquidation |
+| Liquidation detection | ✅ Working | Workflow monitors vault health |
+| CCIP bridging | ✅ Ready | IBurnMintERC20 interface implemented |
 | **BTC custody enforcement** | ⚠️ **Not implemented** | See below |
 
 ### ⚠️ Important Limitation
@@ -141,7 +162,8 @@ bitcoin-backed/
 │   └── script/
 │       ├── Deploy.s.sol       # Deployment script
 │       ├── ConfigureCDPCore.s.sol  # Keystone setup
-│       └── DemoFlow.s.sol     # End-to-end demo
+│       ├── DemoFlow.s.sol     # End-to-end demo
+│       └── CCIPBridgeDemo.s.sol  # CCIP bridging demo
 ├── project.yaml               # CRE project config
 └── README.md                  # This file
 ```

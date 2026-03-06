@@ -232,6 +232,41 @@ const checkIsAttested = (
 	return isAttested
 }
 
+// ============ Liquidation Detection ============
+
+const checkVaultHealth = (
+	runtime: Runtime<Config>,
+	evmClient: InstanceType<typeof cre.capabilities.EVMClient>,
+	userAddress: Address,
+): bigint => {
+	const cdpCoreAddress = runtime.config.network.cdpCoreAddress
+
+	const callData = encodeFunctionData({
+		abi: CDPCore,
+		functionName: 'healthFactor',
+		args: [userAddress],
+	})
+
+	const resp = evmClient
+		.callContract(runtime, {
+			call: encodeCallMsg({
+				from: zeroAddress,
+				to: cdpCoreAddress as Address,
+				data: callData,
+			}),
+			blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
+		})
+		.result()
+
+	const healthFactor = decodeFunctionResult({
+		abi: CDPCore,
+		functionName: 'healthFactor',
+		data: bytesToHex(resp.data),
+	}) as bigint
+
+	return healthFactor
+}
+
 // ============ Report Submission ============
 
 const submitAttestation = (
@@ -368,12 +403,39 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 	const attestedCount = results.filter((r) => r.status === 'attested').length
 	runtime.log(`=== Attestation complete: ${attestedCount}/${confirmedUtxos.length} processed ===`)
 
+	// 4. Check vault health for liquidation detection
+	runtime.log(`=== Checking Vault Health ===`)
+	const depositorAddress = config.depositorAddress as Address
+	const healthFactor = checkVaultHealth(runtime, evmClient, depositorAddress)
+
+	// Health factor is scaled by 1e18 (100 = 1e20, meaning 100% healthy)
+	// If health factor < 100 (1e20), the vault is liquidatable
+	const LIQUIDATION_THRESHOLD = BigInt(100) * BigInt(10 ** 18) // 100 * 1e18
+	const isLiquidatable = healthFactor < LIQUIDATION_THRESHOLD && healthFactor > BigInt(0)
+
+	runtime.log(`Depositor: ${depositorAddress}`)
+	runtime.log(`Health Factor: ${healthFactor.toString()}`)
+	runtime.log(`Liquidatable: ${isLiquidatable}`)
+
+	if (isLiquidatable) {
+		runtime.log(`⚠️ WARNING: Vault is undercollateralized and eligible for liquidation!`)
+	} else if (healthFactor === BigInt(0)) {
+		runtime.log(`No active debt position for this depositor.`)
+	} else {
+		runtime.log(`✓ Vault is healthy (above 150% MCR)`)
+	}
+
 	return safeJsonStringify({
 		status: 'complete',
 		vaultAddress: config.vaultAddress,
 		btcPriceUsd: btcPriceUsd.toString(),
 		processed: attestedCount,
 		results,
+		liquidationStatus: {
+			depositor: depositorAddress,
+			healthFactor: healthFactor.toString(),
+			isLiquidatable,
+		},
 	})
 }
 
