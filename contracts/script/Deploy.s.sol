@@ -7,7 +7,7 @@ import {CDPCore} from "../src/CDPCore.sol";
 
 contract DeployScript is Script {
     function run() external {
-        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        uint256 deployerPrivateKey = vm.envUint("CRE_ETH_PRIVATE_KEY");
 
         vm.startBroadcast(deployerPrivateKey);
 

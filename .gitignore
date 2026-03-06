@@ -5,3 +5,5 @@ coverage
 *.log
 .DS_Store
 /reference
+contracts/broadcast/
+btcusd-workflow/.cre_build_tmp.js

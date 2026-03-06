@@ -1,6 +1,6 @@
 {
   "schedule": "0 */2 * * * *",
-  "vaultAddress": "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+  "vaultAddress": "tb1q0key5kvy054ke6xt0aaj4k0gwk2jyuhu3h2jfy",
   "depositorAddress": "0x8966caCc8E138ed0a03aF3Aa4AEe7B79118C420E",
   "confirmationsRequired": 6,
   "network": {

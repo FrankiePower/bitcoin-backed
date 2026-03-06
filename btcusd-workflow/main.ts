@@ -1,12 +1,12 @@
 /**
  * btcUSD Bitcoin Attestation Workflow
  *
- * This CRE workflow monitors a Bitcoin vault address, verifies deposits via Blockstream API,
+ * This CRE workflow monitors a Bitcoin vault address, verifies deposits via mempool.space API,
  * reads BTC/USD price from Chainlink Data Feeds, and submits signed attestations to CDPCore.
  *
  * Flow:
  * 1. Cron triggers every 2 minutes
- * 2. Fetch UTXOs from Blockstream API for the vault address
+ * 2. Fetch UTXOs from mempool.space Testnet4 API for the vault address
  * 3. Filter for confirmed UTXOs (6+ confirmations)
  * 4. Check if each UTXO is already attested via CDPCore.isAttested()
  * 5. Read BTC/USD price from Chainlink Data Feed
@@ -61,8 +61,8 @@ type Config = z.infer<typeof configSchema>
 
 // ============ Types ============
 
-// Blockstream API UTXO response shape
-interface BlockstreamUTXO {
+// Mempool.space API UTXO response shape (Testnet4)
+interface MempoolUTXO {
 	txid: string
 	vout: number
 	value: number // satoshis
@@ -106,13 +106,13 @@ const txidToBytes32 = (txid: string): Hex => {
 	return `0x${bytes}` as Hex
 }
 
-// ============ Blockstream API ============
+// ============ Mempool.space Testnet4 API ============
 
-const fetchBlockstreamUTXOs = (
+const fetchMempoolUTXOs = (
 	sendRequester: HTTPSendRequester,
 	vaultAddress: string,
-): BlockstreamUTXO[] => {
-	const url = `https://blockstream.info/testnet/api/address/${vaultAddress}/utxo`
+): MempoolUTXO[] => {
+	const url = `https://mempool.space/testnet4/api/address/${vaultAddress}/utxo`
 
 	const req = {
 		url,
@@ -123,11 +123,11 @@ const fetchBlockstreamUTXOs = (
 	}
 
 	const resp = sendRequester.sendRequest(req).result()
-	return json(resp) as BlockstreamUTXO[]
+	return json(resp) as MempoolUTXO[]
 }
 
 const fetchCurrentBlockHeight = (sendRequester: HTTPSendRequester): number => {
-	const url = 'https://blockstream.info/testnet/api/blocks/tip/height'
+	const url = 'https://mempool.space/testnet4/api/blocks/tip/height'
 
 	const req = {
 		url,
@@ -148,7 +148,7 @@ const fetchUTXOsForConsensus = (
 	sendRequester: HTTPSendRequester,
 	config: Config,
 ): string => {
-	const utxos = fetchBlockstreamUTXOs(sendRequester, config.vaultAddress)
+	const utxos = fetchMempoolUTXOs(sendRequester, config.vaultAddress)
 	const currentHeight = fetchCurrentBlockHeight(sendRequester)
 
 	// Filter and enrich UTXOs
@@ -323,7 +323,7 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 	const httpClient = new cre.capabilities.HTTPClient()
 
 	// 1. Fetch UTXOs with DON consensus
-	runtime.log(`Fetching UTXOs from Blockstream API...`)
+	runtime.log(`Fetching UTXOs from mempool.space Testnet4 API...`)
 
 	const utxosJson = httpClient
 		.sendRequest(runtime, fetchUTXOsForConsensus, consensusIdenticalAggregation<string>())(config)
