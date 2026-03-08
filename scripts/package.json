@@ -1,0 +1,10 @@
+{
+  "name": "btc-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "bitcoinjs-lib": "^6.1.7",
+    "ecpair": "^2.1.0",
+    "tiny-secp256k1": "^2.2.3"
+  }
+}
