@@ -45,35 +45,43 @@ btcUSD uses Chainlink CRE to attest confirmed Bitcoin UTXOs and update on-chain 
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           btcUSD System Architecture                         │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    User(["👤 User / Depositor"])
 
-┌─────────────────┐                                    ┌─────────────────┐
-│     User        │                                    │   Base Sepolia  │
-│                 │                                    │                 │
-│  1. Deposit BTC │                                    │  5. Mint btcUSD │
-│     to vault    │                                    │     to user     │
-└────────┬────────┘                                    └────────▲────────┘
-         │                                                      │
-         ▼                                                      │
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Bitcoin       │     │  Chainlink CRE  │     │    CDPCore      │
-│   Testnet4      │────▶│  Workflow       │────▶│    Contract     │
-│                 │     │                 │     │                 │
-│  tb1q0key5k...  │     │ 2. Fetch UTXOs  │     │ 4. Receive      │
-│  (vault addr)   │     │ 3. DON Consensus│     │    attestation  │
-└─────────────────┘     │    + Price Feed │     │    via Keystone │
-                        └─────────────────┘     └─────────────────┘
-                                │
-                                ▼
-                        ┌─────────────────┐
-                        │ Chainlink Price │
-                        │ Feed (BTC/USD)  │
-                        │                 │
-                        │ $95,000/BTC     │
-                        └─────────────────┘
+    subgraph BTC["⛓️ Bitcoin Testnet4"]
+        Vault["🔐 Vault Address\ntb1qvwgj...7lh"]
+    end
+
+    subgraph Ext["🌐 External Data"]
+        Mempool["mempool.space API\nUTXO data"]
+        PriceFeed["🔮 Chainlink Price Feed\nBTC/USD · 8 decimals"]
+    end
+
+    subgraph CRE["⚡ Chainlink CRE — Decentralized Oracle Network"]
+        direction TB
+        Workflow["CRE Workflow\n every 30s cron"]
+        Consensus["DON Consensus\nmedian block height\nidentical UTXO data"]
+        Reports["DON-Signed Reports\nV2 Attestation · V3 Snapshot · V4 Liquidation"]
+    end
+
+    subgraph EVM["🔷 Base Sepolia"]
+        KF["Keystone Forwarder\nonReport()"]
+        CDP["CDPCore\n150% MCR · health factor"]
+        Token["btcUSD Token\nERC20 · mint · burn"]
+    end
+
+    User -- "1. deposit BTC" --> Vault
+    Vault -- "confirmed UTXO" --> Mempool
+    Mempool -- "UTXO list" --> Workflow
+    PriceFeed -- "BTC/USD price" --> Workflow
+    Workflow --> Consensus --> Reports
+    Reports -- "V2: attest + auto-mint" --> KF
+    Reports -- "V3: collateral sync" --> KF
+    Reports -- "V4: autonomous liquidation" --> KF
+    KF --> CDP
+    CDP -- "mint()" --> Token
+    Token -- "2. receive btcUSD" --> User
 ```
 
 ## Complete Message Flow
@@ -84,82 +92,84 @@ btcUSD uses Chainlink CRE to attest confirmed Bitcoin UTXOs and update on-chain 
 sequenceDiagram
     actor User
     participant BTC as Bitcoin Testnet4
-    participant CRE as CRE Workflow
-    participant PF as Price Feed
+    participant MP as mempool.space
+    participant CRE as CRE Workflow (DON)
+    participant PF as Chainlink Price Feed
     participant KF as Keystone Forwarder
     participant CDP as CDPCore
     participant Token as btcUSD Token
 
-    Note over User,Token: Phase 1: Bitcoin Deposit
-    User->>+BTC: Send BTC to vault address
-    BTC->>BTC: Confirm transaction (6+ blocks)
-    BTC-->>-User: UTXO created at vault
+    Note over User,Token: Phase 1 — Bitcoin Deposit
+    User->>BTC: Send BTC to vault address
+    BTC->>BTC: Wait 1 confirmation (~10 min)
 
-    Note over User,Token: Phase 2: CRE Attestation (runs every 2 min)
-    CRE->>+BTC: Fetch UTXOs via mempool.space API
-    BTC-->>-CRE: Return confirmed UTXOs
+    Note over User,Token: Phase 2 — CRE Attestation (every 30s cron)
+    CRE->>MP: GET /address/{vault}/utxo
+    MP-->>CRE: confirmed UTXOs
+    CRE->>CRE: DON median consensus on block height
+    CRE->>CRE: DON identical consensus on UTXO set
+    CRE->>PF: latestRoundData() + staleness check
+    PF-->>CRE: BTC/USD price (8 decimals)
+    CRE->>CDP: isAttested(txid)?
+    CDP-->>CRE: false — new UTXO
 
-    CRE->>CRE: Filter UTXOs (6+ confirmations)
-    CRE->>+CDP: Check isAttested(txid)
-    CDP-->>-CRE: Return attestation status
+    CRE->>CRE: Encode V2 report (txid, sats, price, depositor, mintAmount)
+    CRE->>KF: writeReport() — DON-signed
+    KF->>CDP: onReport(metadata, report)
+    CDP->>CDP: Validate signature · decode V2 · update collateral
+    CDP->>Token: mint(depositor, autoMintAmount)
+    Token-->>User: btcUSD received automatically
 
-    alt UTXO not yet attested
-        CRE->>+PF: Read latestAnswer()
-        PF-->>-CRE: BTC/USD price ($95,000)
+    Note over User,Token: Phase 3 — Collateral Sync (same cycle)
+    CRE->>CRE: Encode V3 Snapshot (totalCollateralSat, price)
+    CRE->>KF: writeReport() — V3
+    KF->>CDP: onReport() · update collateral to exact UTXO sum
 
-        CRE->>CRE: DON Consensus on UTXO + price
-        Note right of CRE: All nodes must agree<br/>on UTXO data and price
+    Note over User,Token: Phase 4 — Health Check + Autonomous Liquidation
+    CRE->>CDP: healthFactor(depositor)
+    CDP-->>CRE: health factor (basis points)
 
-        CRE->>CRE: Encode VaultAttestation struct
-        CRE->>+KF: Generate signed report
-        KF->>+CDP: onReport(metadata, report)
-        CDP->>CDP: Validate Keystone signature
-        CDP->>CDP: Decode attestation
-        CDP->>CDP: Update vault collateral
-        CDP-->>-KF: Attestation recorded
-        KF-->>-CRE: Success
+    alt health < 100 (undercollateralized)
+        CRE->>CRE: Encode V4 Liquidation (depositor, timestamp)
+        CRE->>KF: writeReport() — V4
+        KF->>CDP: onReport() · _applyLiquidation()
+        CDP->>Token: burnFrom(depositor, debt)
+        CDP->>CDP: clear vault
+        Note right of CDP: No external liquidator needed
+    else health ≥ 100
+        CRE->>CRE: log ✓ vault healthy
     end
-
-    Note over User,Token: Phase 3: Liquidation Check
-    CRE->>+CDP: healthFactor(depositor)
-    CDP-->>-CRE: Return health factor
-    CRE->>CRE: Log if liquidatable (HF < 100)
-
-    Note over User,Token: Phase 4: Mint btcUSD
-    User->>+CDP: mintBtcUsd(amount)
-    CDP->>CDP: Verify collateral ratio >= 150%
-    CDP->>+Token: mint(user, amount)
-    Token-->>-CDP: btcUSD minted
-    CDP-->>-User: btcUSD received
 ```
 
 ### Phase-by-Phase Breakdown
 
-#### Phase 1: Bitcoin Deposit (~60 minutes)
+#### Phase 1: Bitcoin Deposit (~10 minutes)
 - User sends BTC to the monitored vault address on Bitcoin Testnet4
 - Transaction is broadcast and included in a block
-- Wait for 6 confirmations (~60 minutes) for finality
+- Wait for 1 confirmation (~10 minutes average on Testnet4)
 
-#### Phase 2: CRE Attestation (~2 minutes)
-- Workflow triggers on cron schedule (every 2 minutes)
+#### Phase 2: CRE Attestation (~30 seconds)
+- Workflow triggers on cron schedule (every 30 seconds)
 - Fetches all UTXOs for vault address from mempool.space
-- Filters for 6+ confirmations
+- Filters for 1+ confirmation
 - Checks CDPCore to skip already-attested UTXOs
-- Reads BTC/USD price from Chainlink Price Feed
-- DON reaches consensus on the data
-- Submits signed attestation to CDPCore via Keystone Forwarder
+- Reads BTC/USD price from Chainlink Price Feed with staleness check
+- DON reaches consensus — median on block height, identical on UTXO set
+- Submits V2 signed report to CDPCore via Keystone Forwarder
+- CDPCore auto-mints btcUSD up to 66.67% of collateral value (no separate mint call needed)
 
-#### Phase 3: Liquidation Check (~1 second)
-- After attestation, workflow reads vault health factor
-- Logs warning if position is undercollateralized
-- Enables external liquidation bots to monitor
+#### Phase 3: Collateral Sync (~30 seconds)
+- Same cron cycle submits V3 Snapshot with authoritative total collateral
+- Detects spent UTXOs and reduces on-chain collateral accordingly
+- Keeps vault state accurate even after partial withdrawals
 
-#### Phase 4: Minting (~15 seconds)
-- User calls `mintBtcUsd()` with desired amount
-- Contract verifies collateral ratio >= 150%
-- btcUSD tokens minted to user's address
+#### Phase 4: Autonomous Liquidation (~30 seconds)
+- Workflow reads health factor from CDPCore
+- If health < 100 (undercollateralized), submits V4 Liquidation report
+- CDPCore burns depositor's btcUSD debt directly and clears the vault
+- No external liquidator wallet or token approval required
 
-**Total Time**: ~65 minutes (Bitcoin confirmation dominates)
+**Total Time**: ~10-15 minutes (Bitcoin confirmation dominates)
 
 ## Chainlink Integration
 
@@ -234,8 +244,8 @@ a151a8be4c687caa0a3c6ca0bb0c0c22a103f3e04b7f4ca2582ed3692ba1ffb9  // txid (bytes
 | **MCR** | 150% | Minimum Collateral Ratio |
 | **Liquidation Threshold** | 100 | Health factor below which vault is liquidatable |
 | **Price Staleness** | 15 minutes | Maximum age of price data |
-| **Confirmations** | 6 | Required Bitcoin confirmations |
-| **Cron Schedule** | Every 2 min | Workflow execution frequency |
+| **Confirmations** | 1 | Required Bitcoin confirmations |
+| **Cron Schedule** | Every 30s | Workflow execution frequency |
 
 ### Health Factor Calculation
 
@@ -259,7 +269,7 @@ If Health Factor < 100 → Position is liquidatable
 | Contract | Address | Explorer |
 |----------|---------|----------|
 | **BtcUSD** | `0x5a458544342eEaA64BB6b9940F826cbd74d62D8E` | [View](https://sepolia.basescan.org/address/0x5a458544342eEaA64BB6b9940F826cbd74d62D8E) |
-| **CDPCore** | `0x25cb5d05f22f218818Bd950969fCd6Ba0E196FaC` | [View](https://sepolia.basescan.org/address/0x25cb5d05f22f218818Bd950969fCd6Ba0E196FaC) |
+| **CDPCore** | `0x5f39FEF37F63712eC2346725876dD765fc57F503` | [View](https://sepolia.basescan.org/address/0x5f39FEF37F63712eC2346725876dD765fc57F503) |
 
 ### Configuration
 
@@ -451,11 +461,12 @@ For trustless BTC custody, future versions would implement:
 | Phase | Duration | Notes |
 |-------|----------|-------|
 | Bitcoin deposit | Variable | User action |
-| Block confirmation | ~60 minutes | 6 confirmations |
-| CRE workflow | ~2 minutes | Cron interval |
-| Attestation submission | ~15 seconds | EVM transaction |
-| Minting btcUSD | ~15 seconds | EVM transaction |
-| **Total (deposit to mint)** | **~65 minutes** | Bitcoin finality dominates |
+| Block confirmation | ~10 minutes | 1 confirmation |
+| CRE workflow cycle | ~30 seconds | Cron interval |
+| Attestation + auto-mint | ~15 seconds | Single EVM tx via Keystone |
+| Collateral snapshot | ~15 seconds | EVM tx |
+| Liquidation (if triggered) | ~15 seconds | EVM tx, no external bot needed |
+| **Total (deposit to mint)** | **~10-15 minutes** | Bitcoin finality dominates |
 
 ### Gas Costs (Base Sepolia)
 
@@ -505,7 +516,7 @@ bitcoin-backed/
 - [x] CDPCore contract with mint/repay/liquidate
 - [x] Auto-mint via V2 report (single tx deposit + mint)
 - [x] V3 Snapshot sync for collateral reduction
-- [x] Liquidation detection in workflow
+- [x] V4 autonomous liquidation (DON-signed, no external bot needed)
 - [ ] Production deployment on mainnet
 - [ ] Multi-depositor support (per-user vault addresses)
 - [ ] P2WSH custody enforcement
@@ -556,4 +567,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Built for ETHGlobal Buenos Aires Hackathon - DeFi & Tokenization Track**
+**Built for ChainLink Convergence Hackathon - DeFi & Tokenization Track**
