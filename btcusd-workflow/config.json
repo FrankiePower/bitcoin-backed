@@ -3,11 +3,11 @@
   "vaultAddress": "tb1q0key5kvy054ke6xt0aaj4k0gwk2jyuhu3h2jfy",
   "depositorAddress": "0x8966caCc8E138ed0a03aF3Aa4AEe7B79118C420E",
   "confirmationsRequired": 6,
-  "enableVaultSnapshotSync": false,
-  "autoMintAmountUsdWei": "0",
+  "enableVaultSnapshotSync": true,
+  "autoMintAmountUsdWei": "1000000000000000000000000",
   "network": {
     "chainName": "ethereum-testnet-sepolia-base-1",
-    "cdpCoreAddress": "0x25cb5d05f22f218818Bd950969fCd6Ba0E196FaC",
+    "cdpCoreAddress": "0x5f39FEF37F63712eC2346725876dD765fc57F503",
     "btcUsdFeedAddress": "0x0FB99723Aee6f420beAD13e6bBB79b7E6F034298",
     "gasLimit": "500000"
   }

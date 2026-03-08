@@ -1,18 +1,20 @@
 /**
- * btcUSD Bitcoin Attestation Workflow
+ * btcUSD Autonomous CDP Workflow
  *
- * This CRE workflow monitors a Bitcoin vault address, verifies deposits via mempool.space API,
- * reads BTC/USD price from Chainlink Data Feeds, and submits signed attestations to CDPCore.
+ * Fully autonomous CRE workflow. Every trigger cycle it:
  *
- * Flow:
  * 1. Cron or HTTP trigger fires
  * 2. Fetch current Bitcoin block height with consensusMedianAggregation (robust across DON nodes)
  * 3. Fetch UTXOs from mempool.space Testnet4 API with consensusIdenticalAggregation
  * 4. Filter for confirmed UTXOs (N+ confirmations)
  * 5. Read BTC/USD price from Chainlink Data Feed (latestRoundData with staleness check)
- * 6. For each unattested UTXO: encode VaultAttestation, generate DON-signed report, submit to CDPCore
- * 7. Optionally submit a V3 Snapshot to sync total collateral (spent UTXO detection)
- * 8. Check vault health factor for liquidation detection
+ * 6. For each unattested UTXO: encode V2 VaultAttestation (with autoMintAmountUsdWei),
+ *    generate DON-signed report, submit to CDPCore — contract auto-mints btcUSD up to MCR capacity
+ * 7. Submit a V3 Snapshot to authoritatively sync collateral (detects spent UTXOs, reduces collateral)
+ * 8. Check vault health factor — if undercollateralized, submit a V4 Liquidation report so CDPCore
+ *    autonomously burns the depositor's btcUSD debt and clears the vault (no liquidator wallet needed)
+ *
+ * All on-chain writes log their tx hash + Base Sepolia explorer link.
  */
 
 import {
@@ -66,6 +68,9 @@ const configSchema = z.object({
 type Config = z.infer<typeof configSchema>
 
 const VAULT_SNAPSHOT_REPORT_KIND = keccak256(stringToHex('BTCUSD_VAULT_SNAPSHOT_V1'))
+const VAULT_LIQUIDATION_REPORT_KIND = keccak256(stringToHex('BTCUSD_LIQUIDATION_V1'))
+
+const explorerLink = (txHash: string) => `https://sepolia.basescan.org/tx/${txHash}`
 
 // ============ Types ============
 
@@ -360,6 +365,7 @@ const submitAttestation = (
 
 	runtime.log(`Attestation submitted successfully!`)
 	runtime.log(`  TX Hash: ${txHashHex}`)
+	runtime.log(`  Explorer: ${explorerLink(txHashHex)}`)
 
 	return txHashHex
 }
@@ -415,7 +421,53 @@ const submitVaultSnapshot = (
 		throw new Error(`Failed to write snapshot report: ${resp.errorMessage || resp.txStatus}`)
 	}
 
-	return bytesToHex(resp.txHash || new Uint8Array(32))
+	const snapshotTxHash = bytesToHex(resp.txHash || new Uint8Array(32))
+	runtime.log(`Vault snapshot submitted! TX: ${snapshotTxHash}`)
+	runtime.log(`  Explorer: ${explorerLink(snapshotTxHash)}`)
+	return snapshotTxHash
+}
+
+// V4 Liquidation report: DON-signed signal to CDPCore to liquidate an undercollateralized vault.
+// CDPCore is an authorized burner on BtcUSD so it can burn the depositor's tokens directly — no approval needed.
+const submitLiquidation = (
+	runtime: Runtime<Config>,
+	evmClient: InstanceType<typeof cre.capabilities.EVMClient>,
+	depositorAddress: Address,
+): string => {
+	const config = runtime.config
+	const timestamp = BigInt(Math.floor(Date.now() / 1000))
+
+	// V4 report: (reportKind, depositor, timestamp) = 3 × 32 bytes
+	const reportData = encodeAbiParameters(
+		parseAbiParameters('bytes32 reportKind, address depositor, uint256 timestamp'),
+		[VAULT_LIQUIDATION_REPORT_KIND, depositorAddress, timestamp],
+	)
+
+	const reportResponse = runtime
+		.report({
+			encodedPayload: hexToBase64(reportData),
+			encoderName: 'evm',
+			signingAlgo: 'ecdsa',
+			hashingAlgo: 'keccak256',
+		})
+		.result()
+
+	const resp = evmClient
+		.writeReport(runtime, {
+			receiver: config.network.cdpCoreAddress,
+			report: reportResponse,
+			gasConfig: { gasLimit: config.network.gasLimit },
+		})
+		.result()
+
+	if (resp.txStatus !== TxStatus.SUCCESS) {
+		throw new Error(`Failed to submit liquidation: ${resp.errorMessage || resp.txStatus}`)
+	}
+
+	const txHashHex = bytesToHex(resp.txHash || new Uint8Array(32))
+	runtime.log(`Liquidation executed! TX: ${txHashHex}`)
+	runtime.log(`  Explorer: ${explorerLink(txHashHex)}`)
+	return txHashHex
 }
 
 // ============ Main Workflow Logic ============
@@ -519,8 +571,14 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 	runtime.log(`Health Factor: ${healthFactor.toString()}`)
 	runtime.log(`Liquidatable: ${isLiquidatable}`)
 
+	let liquidationTxHash: string | undefined
 	if (isLiquidatable) {
-		runtime.log(`⚠️ WARNING: Vault is undercollateralized and eligible for liquidation!`)
+		runtime.log(`⚠️ Vault undercollateralized — submitting autonomous liquidation report...`)
+		try {
+			liquidationTxHash = submitLiquidation(runtime, evmClient, depositorAddress)
+		} catch (error) {
+			runtime.log(`Failed to submit liquidation: ${error}`)
+		}
 	} else if (healthFactor === BigInt(0)) {
 		runtime.log(`No active debt position for this depositor.`)
 	} else {
@@ -538,6 +596,7 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 			depositor: depositorAddress,
 			healthFactor: healthFactor.toString(),
 			isLiquidatable,
+			liquidationTxHash,
 		},
 	})
 }

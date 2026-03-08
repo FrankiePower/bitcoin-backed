@@ -10,7 +10,7 @@ contract ConfigureCDPCoreScript is Script {
     address constant PRODUCTION_FORWARDER = 0xF8344CFd5c43616a4366C34E3EEE75af79a74482;
 
     // Deployed CDPCore address on Base Sepolia
-    address constant CDP_CORE = 0x25cb5d05f22f218818Bd950969fCd6Ba0E196FaC;
+    address constant CDP_CORE = 0x5f39FEF37F63712eC2346725876dD765fc57F503;
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("CRE_ETH_PRIVATE_KEY");

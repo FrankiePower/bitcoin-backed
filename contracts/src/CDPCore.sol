@@ -33,6 +33,13 @@ contract CDPCore is Ownable {
         uint256 mintAmountUsd; // Optional requested mint amount (18 decimals)
     }
 
+    /// @notice Liquidation report: DON signals that a vault is undercollateralized and should be liquidated.
+    struct VaultLiquidationReportV4 {
+        bytes32 reportKind; // Must match VAULT_LIQUIDATION_REPORT_KIND
+        address depositor;  // Vault owner to liquidate
+        uint256 timestamp;  // Report timestamp (for staleness check)
+    }
+
     /// @notice Snapshot report format for vault collateral synchronization.
     struct VaultSnapshotReportV3 {
         bytes32 reportKind; // Must match VAULT_SNAPSHOT_REPORT_KIND
@@ -68,6 +75,7 @@ contract CDPCore is Ownable {
     /// @notice Satoshis per BTC
     uint256 public constant SATS_PER_BTC = 1e8;
     bytes32 public constant VAULT_SNAPSHOT_REPORT_KIND = keccak256("BTCUSD_VAULT_SNAPSHOT_V1");
+    bytes32 public constant VAULT_LIQUIDATION_REPORT_KIND = keccak256("BTCUSD_LIQUIDATION_V1");
 
     // ============ State ============
 
@@ -173,7 +181,14 @@ contract CDPCore is Ownable {
         // - V3 Snapshot: (reportKind, depositor, collateralSat, btcPriceUsd, timestamp, mintAmountUsd, reserved, version)
         VaultAttestation memory attestation;
         uint256 requestedMintAmountUsd = 0;
-        if (report.length == 32 * 8) {
+        if (report.length == 32 * 3) {
+            // V4 Liquidation: (reportKind, depositor, timestamp)
+            VaultLiquidationReportV4 memory liq = abi.decode(report, (VaultLiquidationReportV4));
+            if (liq.reportKind != VAULT_LIQUIDATION_REPORT_KIND) revert InvalidReportFormat();
+            if (block.timestamp - liq.timestamp > STALENESS_LIMIT) revert AttestationStale();
+            _applyLiquidation(liq.depositor);
+            return;
+        } else if (report.length == 32 * 8) {
             VaultSnapshotReportV3 memory snapshot = abi.decode(report, (VaultSnapshotReportV3));
             if (snapshot.reportKind != VAULT_SNAPSHOT_REPORT_KIND) revert InvalidReportFormat();
             _applySnapshot(snapshot);
@@ -389,6 +404,28 @@ contract CDPCore is Ownable {
         btcUsd.mint(user, mintedAmountUsd);
 
         emit BtcUSDMinted(user, mintedAmountUsd, vault.debtUsd);
+    }
+
+    /// @notice Execute liquidation triggered by a DON-signed liquidation report.
+    /// @dev CDPCore is an authorized burner on BtcUSD — no depositor approval needed.
+    function _applyLiquidation(address depositor) internal {
+        Vault storage vault = vaults[depositor];
+
+        if (!vault.active || vault.debtUsd == 0) return;
+
+        uint256 hf = _calculateHealthFactor(vault.collateralSat, vault.debtUsd, vault.lastBtcPrice);
+        if (hf >= 100) revert VaultHealthy();
+
+        uint256 debtToLiquidate = vault.debtUsd;
+
+        // CDPCore holds the burner role on BtcUSD — burn depositor's tokens directly
+        btcUsd.burnFrom(depositor, debtToLiquidate);
+
+        vault.debtUsd = 0;
+        vault.collateralSat = 0;
+        vault.active = false;
+
+        emit VaultLiquidated(depositor, address(this), debtToLiquidate);
     }
 
     function _applySnapshot(VaultSnapshotReportV3 memory snapshot) internal {
