@@ -5,24 +5,26 @@
  * reads BTC/USD price from Chainlink Data Feeds, and submits signed attestations to CDPCore.
  *
  * Flow:
- * 1. Cron triggers every 2 minutes
- * 2. Fetch UTXOs from mempool.space Testnet4 API for the vault address
- * 3. Filter for confirmed UTXOs (6+ confirmations)
- * 4. Check if each UTXO is already attested via CDPCore.isAttested()
- * 5. Read BTC/USD price from Chainlink Data Feed
- * 6. Encode VaultAttestation struct
- * 7. Generate DON-signed report
- * 8. Submit report to CDPCore on Base Sepolia
+ * 1. Cron or HTTP trigger fires
+ * 2. Fetch current Bitcoin block height with consensusMedianAggregation (robust across DON nodes)
+ * 3. Fetch UTXOs from mempool.space Testnet4 API with consensusIdenticalAggregation
+ * 4. Filter for confirmed UTXOs (N+ confirmations)
+ * 5. Read BTC/USD price from Chainlink Data Feed (latestRoundData with staleness check)
+ * 6. For each unattested UTXO: encode VaultAttestation, generate DON-signed report, submit to CDPCore
+ * 7. Optionally submit a V3 Snapshot to sync total collateral (spent UTXO detection)
+ * 8. Check vault health factor for liquidation detection
  */
 
 import {
 	bytesToHex,
 	consensusIdenticalAggregation,
+	consensusMedianAggregation,
 	cre,
 	type CronPayload,
 	encodeCallMsg,
 	getNetwork,
 	hexToBase64,
+	type HTTPPayload,
 	type HTTPSendRequester,
 	json,
 	LAST_FINALIZED_BLOCK_NUMBER,
@@ -120,58 +122,52 @@ const fetchMempoolUTXOs = (
 ): MempoolUTXO[] => {
 	const url = `https://mempool.space/testnet4/api/address/${vaultAddress}/utxo`
 
-	const req = {
+	const resp = sendRequester.sendRequest({
 		url,
 		method: 'GET' as const,
-		headers: {
-			'Content-Type': 'application/json',
-		},
-	}
-
-	const resp = sendRequester.sendRequest(req).result()
+		headers: { 'Content-Type': 'application/json' },
+	}).result()
 	return json(resp) as MempoolUTXO[]
 }
 
-const fetchCurrentBlockHeight = (sendRequester: HTTPSendRequester): number => {
-	const url = 'https://mempool.space/testnet4/api/blocks/tip/height'
-
-	const req = {
-		url,
+// Standalone block height fetcher — used with consensusMedianAggregation so that
+// small differences in chain tip across DON nodes are resolved via median rather
+// than requiring all nodes to see the exact same block.
+const fetchBlockHeightForConsensus = (sendRequester: HTTPSendRequester): number => {
+	const resp = sendRequester.sendRequest({
+		url: 'https://mempool.space/testnet4/api/blocks/tip/height',
 		method: 'GET' as const,
-		headers: {
-			'Content-Type': 'application/json',
-		},
-	}
-
-	const resp = sendRequester.sendRequest(req).result()
-	// Response is plain text number
+		headers: { 'Content-Type': 'application/json' },
+	}).result()
 	const heightStr = new TextDecoder().decode(resp.body)
 	return parseInt(heightStr, 10)
 }
 
-// Fetch function for consensus - returns UTXOs as JSON string
+// UTXO fetcher for DON consensus — uses consensusIdenticalAggregation because
+// txid and value are factual on-chain data that must match exactly across all nodes.
+// Block height is passed in (already median-aggregated) to compute confirmations.
 const fetchUTXOsForConsensus = (
 	sendRequester: HTTPSendRequester,
-	config: Config,
+	args: { vaultAddress: string; confirmationsRequired: number; currentHeight: number },
 ): string => {
-	const utxos = fetchMempoolUTXOs(sendRequester, config.vaultAddress)
-	const currentHeight = fetchCurrentBlockHeight(sendRequester)
+	const utxos = fetchMempoolUTXOs(sendRequester, args.vaultAddress)
 
-	// Filter and enrich UTXOs
 	const confirmedUtxos: ConfirmedUTXO[] = utxos
 		.filter((utxo) => utxo.status.confirmed && utxo.status.block_height)
 		.map((utxo) => ({
 			txid: utxo.txid,
 			value: utxo.value,
 			blockHeight: utxo.status.block_height!,
-			confirmations: currentHeight - utxo.status.block_height! + 1,
+			confirmations: args.currentHeight - utxo.status.block_height! + 1,
 		}))
-		.filter((utxo) => utxo.confirmations >= config.confirmationsRequired)
+		.filter((utxo) => utxo.confirmations >= args.confirmationsRequired)
 
 	return JSON.stringify(confirmedUtxos)
 }
 
 // ============ On-Chain Reads ============
+
+const PRICE_STALENESS_SECONDS = 3600n // 1 hour (matches typical testnet heartbeat)
 
 const readBtcUsdPrice = (
 	runtime: Runtime<Config>,
@@ -181,7 +177,7 @@ const readBtcUsdPrice = (
 
 	const callData = encodeFunctionData({
 		abi: PriceFeedAggregator,
-		functionName: 'latestAnswer',
+		functionName: 'latestRoundData',
 	})
 
 	const resp = evmClient
@@ -195,14 +191,21 @@ const readBtcUsdPrice = (
 		})
 		.result()
 
-	const price = decodeFunctionResult({
+	const [, answer, , updatedAt] = decodeFunctionResult({
 		abi: PriceFeedAggregator,
-		functionName: 'latestAnswer',
+		functionName: 'latestRoundData',
 		data: bytesToHex(resp.data),
-	}) as bigint
+	}) as [bigint, bigint, bigint, bigint, bigint]
 
-	runtime.log(`BTC/USD price from Chainlink: ${price.toString()} (8 decimals)`)
-	return price
+	// Reject stale price data
+	const nowSeconds = BigInt(Math.floor(Date.now() / 1000))
+	const age = nowSeconds - updatedAt
+	if (age > PRICE_STALENESS_SECONDS) {
+		throw new Error(`BTC/USD price feed is stale: ${age}s old (max ${PRICE_STALENESS_SECONDS}s)`)
+	}
+
+	runtime.log(`BTC/USD price from Chainlink: ${answer.toString()} (8 decimals), age: ${age}s`)
+	return answer
 }
 
 const checkIsAttested = (
@@ -428,11 +431,24 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 	const evmClient = getEvmClient(config.network.chainName)
 	const httpClient = new cre.capabilities.HTTPClient()
 
-	// 1. Fetch UTXOs with DON consensus
-	runtime.log(`Fetching UTXOs from mempool.space Testnet4 API...`)
+	// 1a. Fetch current Bitcoin block height with median consensus.
+	//     DON nodes may observe slightly different chain tips; median gives a
+	//     robust canonical value without requiring all nodes to agree exactly.
+	runtime.log(`Fetching Bitcoin tip block height with median consensus...`)
+	const currentHeight = httpClient
+		.sendRequest(runtime, fetchBlockHeightForConsensus, consensusMedianAggregation<number>())()
+		.result()
+	runtime.log(`Consensus block height: ${currentHeight}`)
 
+	// 1b. Fetch UTXOs with identical consensus.
+	//     txid and value are factual on-chain data — all nodes must agree exactly.
+	runtime.log(`Fetching UTXOs from mempool.space Testnet4 API...`)
 	const utxosJson = httpClient
-		.sendRequest(runtime, fetchUTXOsForConsensus, consensusIdenticalAggregation<string>())(config)
+		.sendRequest(runtime, fetchUTXOsForConsensus, consensusIdenticalAggregation<string>())({
+			vaultAddress: config.vaultAddress,
+			confirmationsRequired: config.confirmationsRequired,
+			currentHeight,
+		})
 		.result()
 
 	const confirmedUtxos: ConfirmedUTXO[] = JSON.parse(utxosJson)
@@ -536,15 +552,21 @@ const onCronTrigger = (runtime: Runtime<Config>, payload: CronPayload): string =
 	return processAttestations(runtime)
 }
 
+// HTTP trigger allows operators to run the workflow on-demand without waiting
+// for the next cron interval — useful for manual attestation checks or demos.
+const onHttpTrigger = (runtime: Runtime<Config>, _payload: HTTPPayload): string => {
+	runtime.log(`HTTP trigger fired — running on-demand attestation check`)
+	return processAttestations(runtime)
+}
+
 // ============ Workflow Init ============
 
 const initWorkflow = (config: Config) => {
 	const cron = new cre.capabilities.CronCapability()
+	const http = new cre.capabilities.HTTPCapability()
 	return [
-		cre.handler(
-			cron.trigger({ schedule: config.schedule }),
-			onCronTrigger,
-		),
+		cre.handler(cron.trigger({ schedule: config.schedule }), onCronTrigger),
+		cre.handler(http.trigger({}), onHttpTrigger),
 	]
 }
 

@@ -369,25 +369,11 @@ The README must **link every Chainlink file** — this is an explicit judging re
 
 ### Todo
 - [ ] Write `README.md` — project summary, architecture diagram (Mermaid), Chainlink file table
-- [ ] Add Mermaid sequence diagram (BMCP won partly because of this — judges can visually follow the flow)
+- [ ] Add Mermaid sequence diagram
 - [ ] Add decoded example: what a VaultAttestation looks like (raw bytes → decoded fields)
 - [ ] Make GitHub repo public
 - [ ] Submit 3-5 min video (unlisted YouTube or Loom)
 - [ ] DoraHacks / hackathon portal submission
-
----
-
-## Wow Factors (From Winners — Nothing Forced)
-
-These come directly from what judges rewarded in ETHGlobal Buenos Aires:
-
-| Idea | From | Status | Why |
-|---|---|---|---|
-| `ConsensusAggregationByFields` with `median`/`identical` per field | AIMM | **Built into Phase 2** | Shows deep CRE knowledge — DON-level Bitcoin UTXO consensus |
-| Mermaid sequence diagram in README | BMCP | **Phase 5** | Judges follow the flow visually — BMCP won partly for completeness |
-| Oracle-gated minting (staleness check) | MultiSub | **Built into Phase 1** | CDPCore refuses mint if CRE attestation > 15 min old |
-| Three Chainlink services composed | BMCP + MultiSub | **Built into architecture** | CRE + Price Feed + CCIP — each load-bearing |
-| Decoded example in README | BMCP | **Phase 5** | Shows a real VaultAttestation with actual txid/amount |
 
 ---
 

@@ -43,8 +43,6 @@ to Arbitrum, Optimism, Ethereum
 User spends btcUSD on any chain
 ```
 
-CRE is irreplaceable here — it's the only way to get Bitcoin state onto EVM without a centralized relayer. Remove CRE and you need a trusted operator. This is the same architectural role CRE played in BMCP (which won ETHGlobal Buenos Aires).
-
 ---
 
 ## Does This Make Sense to Build?
@@ -55,7 +53,7 @@ CRE is irreplaceable here — it's the only way to get Bitcoin state onto EVM wi
 ~$60B in WBTC/tBTC sits in DeFi right now. All of it carries custodian risk. There is genuine demand for trustless BTC collateral.
 
 **2. The Chainlink integration is load-bearing**
-CRE is not a nice-to-have — it IS the bridge. Without it, there is no protocol. Judges rewarded exactly this pattern in BMCP.
+CRE is not a nice-to-have — it IS the bridge. Without it, there is no protocol.
 
 **3. Two Chainlink services, both essential**
 - CRE: Bitcoin → EVM attestation (no CRE = no bridge)
@@ -156,4 +154,4 @@ When a vault is attested on Base:
 
 ## Why We're Doing This, Not Something Else
 
-The Stablecoin Risk Guardian idea (monitoring existing stablecoins) is derivative — it consumes existing Chainlink feeds without creating a new financial primitive. btcUSD creates something that doesn't exist: a stablecoin backed by native BTC with a decentralized oracle bridge. The prior winners (BMCP) proved that Bitcoin + CRE is exactly the kind of novel architecture judges reward.
+The Stablecoin Risk Guardian idea (monitoring existing stablecoins) is derivative — it consumes existing Chainlink feeds without creating a new financial primitive. btcUSD creates something that doesn't exist: a stablecoin backed by native BTC with a decentralized oracle bridge.
