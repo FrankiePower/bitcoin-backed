@@ -27,9 +27,18 @@ contract ConfigureCDPCoreScript is Script {
         console.log("Setting Keystone Forwarder (simulation):", SIMULATION_FORWARDER);
         cdpCore.setKeystoneForwarder(SIMULATION_FORWARDER, true);
 
-        // 2. Set Workflow Owner (the deployer address)
+        // 2. Also authorize deployer EOA as forwarder (for direct onReport calls in simulation)
+        console.log("Setting Keystone Forwarder (deployer EOA):", workflowOwner);
+        cdpCore.setKeystoneForwarder(workflowOwner, true);
+
+        // 3. Set Workflow Owner (the deployer address)
         console.log("Setting Workflow Owner:", workflowOwner);
         cdpCore.setWorkflowOwner(workflowOwner, true);
+
+        // 4. Authorize simulation dummy workflow owner (CRE SDK uses 0xaaa... in --broadcast mode)
+        address simulationWorkflowOwner = 0xaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa;
+        console.log("Setting simulation Workflow Owner:", simulationWorkflowOwner);
+        cdpCore.setWorkflowOwner(simulationWorkflowOwner, true);
 
         vm.stopBroadcast();
 
