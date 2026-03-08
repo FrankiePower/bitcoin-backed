@@ -36,7 +36,9 @@ import {
 	encodeAbiParameters,
 	encodeFunctionData,
 	type Hex,
+	keccak256,
 	parseAbiParameters,
+	stringToHex,
 	zeroAddress,
 } from 'viem'
 import { z } from 'zod'
@@ -49,6 +51,8 @@ const configSchema = z.object({
 	vaultAddress: z.string(), // Bitcoin testnet vault address to monitor
 	depositorAddress: z.string(), // EVM address of the depositor (for demo: single user)
 	confirmationsRequired: z.number().min(1).default(6), // Minimum confirmations
+	enableVaultSnapshotSync: z.boolean().default(false), // Requires CDPCore with V3 snapshot support
+	autoMintAmountUsdWei: z.string().default('0'), // Optional auto-mint amount requested per new attestation (18 decimals)
 	network: z.object({
 		chainName: z.string(), // e.g., "ethereum-testnet-sepolia-base-1"
 		cdpCoreAddress: z.string(), // CDPCore contract address on Base Sepolia
@@ -58,6 +62,8 @@ const configSchema = z.object({
 })
 
 type Config = z.infer<typeof configSchema>
+
+const VAULT_SNAPSHOT_REPORT_KIND = keccak256(stringToHex('BTCUSD_VAULT_SNAPSHOT_V1'))
 
 // ============ Types ============
 
@@ -276,37 +282,48 @@ const submitAttestation = (
 	btcPriceUsd: bigint,
 ): string => {
 	const config = runtime.config
+	const requestedMintAmountUsd = BigInt(config.autoMintAmountUsdWei || '0')
 
 	runtime.log(`Submitting attestation for txid: ${utxo.txid}`)
 	runtime.log(`  Amount: ${utxo.value} satoshis`)
 	runtime.log(`  Block height: ${utxo.blockHeight}`)
 	runtime.log(`  BTC price: ${btcPriceUsd.toString()}`)
+	runtime.log(`  Requested auto-mint: ${requestedMintAmountUsd.toString()} wei`)
 
-	// Encode VaultAttestation struct
-	// struct VaultAttestation {
-	//     bytes32 txid;
-	//     uint64 amountSat;
-	//     uint32 blockHeight;
-	//     uint256 btcPriceUsd;
-	//     uint256 timestamp;
-	//     address depositor;
-	// }
+	// Encode report payload. For backward compatibility with already-deployed
+	// contracts, use V1 format when auto-mint is 0, else use V2 format.
 	const txidBytes32 = txidToBytes32(utxo.txid)
 	const timestamp = BigInt(Math.floor(Date.now() / 1000))
 
-	const reportData = encodeAbiParameters(
-		parseAbiParameters(
-			'bytes32 txid, uint64 amountSat, uint32 blockHeight, uint256 btcPriceUsd, uint256 timestamp, address depositor',
-		),
-		[
-			txidBytes32,
-			BigInt(utxo.value),
-			utxo.blockHeight,
-			btcPriceUsd,
-			timestamp,
-			config.depositorAddress as Address,
-		],
-	)
+	const reportData =
+		requestedMintAmountUsd > BigInt(0)
+			? encodeAbiParameters(
+					parseAbiParameters(
+						'bytes32 txid, uint64 amountSat, uint32 blockHeight, uint256 btcPriceUsd, uint256 timestamp, address depositor, uint256 mintAmountUsd',
+					),
+					[
+						txidBytes32,
+						BigInt(utxo.value),
+						utxo.blockHeight,
+						btcPriceUsd,
+						timestamp,
+						config.depositorAddress as Address,
+						requestedMintAmountUsd,
+					],
+				)
+			: encodeAbiParameters(
+					parseAbiParameters(
+						'bytes32 txid, uint64 amountSat, uint32 blockHeight, uint256 btcPriceUsd, uint256 timestamp, address depositor',
+					),
+					[
+						txidBytes32,
+						BigInt(utxo.value),
+						utxo.blockHeight,
+						btcPriceUsd,
+						timestamp,
+						config.depositorAddress as Address,
+					],
+				)
 
 	runtime.log(`Encoded report data: ${reportData}`)
 
@@ -344,6 +361,60 @@ const submitAttestation = (
 	return txHashHex
 }
 
+const submitVaultSnapshot = (
+	runtime: Runtime<Config>,
+	evmClient: InstanceType<typeof cre.capabilities.EVMClient>,
+	totalCollateralSat: bigint,
+	btcPriceUsd: bigint,
+): string => {
+	const config = runtime.config
+	const timestamp = BigInt(Math.floor(Date.now() / 1000))
+
+	// Keep snapshot minting disabled by default to avoid repeated minting each cron run.
+	const requestedMintAmountUsd = BigInt(0)
+
+	const reportData = encodeAbiParameters(
+		parseAbiParameters(
+			'bytes32 reportKind, address depositor, uint256 collateralSat, uint256 btcPriceUsd, uint256 timestamp, uint256 mintAmountUsd, uint256 reserved, uint256 version',
+		),
+		[
+			VAULT_SNAPSHOT_REPORT_KIND,
+			config.depositorAddress as Address,
+			totalCollateralSat,
+			btcPriceUsd,
+			timestamp,
+			requestedMintAmountUsd,
+			BigInt(0),
+			BigInt(1),
+		],
+	)
+
+	const reportResponse = runtime
+		.report({
+			encodedPayload: hexToBase64(reportData),
+			encoderName: 'evm',
+			signingAlgo: 'ecdsa',
+			hashingAlgo: 'keccak256',
+		})
+		.result()
+
+	const resp = evmClient
+		.writeReport(runtime, {
+			receiver: config.network.cdpCoreAddress,
+			report: reportResponse,
+			gasConfig: {
+				gasLimit: config.network.gasLimit,
+			},
+		})
+		.result()
+
+	if (resp.txStatus !== TxStatus.SUCCESS) {
+		throw new Error(`Failed to write snapshot report: ${resp.errorMessage || resp.txStatus}`)
+	}
+
+	return bytesToHex(resp.txHash || new Uint8Array(32))
+}
+
 // ============ Main Workflow Logic ============
 
 const processAttestations = (runtime: Runtime<Config>): string => {
@@ -366,11 +437,6 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 
 	const confirmedUtxos: ConfirmedUTXO[] = JSON.parse(utxosJson)
 	runtime.log(`Found ${confirmedUtxos.length} confirmed UTXOs with ${config.confirmationsRequired}+ confirmations`)
-
-	if (confirmedUtxos.length === 0) {
-		runtime.log(`No new deposits to process.`)
-		return JSON.stringify({ status: 'no_deposits', processed: 0 })
-	}
 
 	// 2. Read BTC/USD price from Chainlink
 	const btcPriceUsd = readBtcUsdPrice(runtime, evmClient)
@@ -403,15 +469,35 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 	const attestedCount = results.filter((r) => r.status === 'attested').length
 	runtime.log(`=== Attestation complete: ${attestedCount}/${confirmedUtxos.length} processed ===`)
 
+	// 3.5 Optional authoritative collateral synchronization.
+	// This allows spent vault UTXOs to reduce on-chain collateral.
+	let snapshot: { status: string; txHash?: string; totalCollateralSat?: string } | undefined
+	if (config.enableVaultSnapshotSync) {
+		const totalCollateralSat = confirmedUtxos.reduce((sum, utxo) => sum + BigInt(utxo.value), BigInt(0))
+		runtime.log(`Submitting vault snapshot sync with collateral=${totalCollateralSat.toString()} sats`)
+		try {
+			const snapshotTxHash = submitVaultSnapshot(runtime, evmClient, totalCollateralSat, btcPriceUsd)
+			snapshot = {
+				status: 'synced',
+				txHash: snapshotTxHash,
+				totalCollateralSat: totalCollateralSat.toString(),
+			}
+		} catch (error) {
+			runtime.log(`Failed to sync vault snapshot: ${error}`)
+			snapshot = { status: 'failed' }
+		}
+	}
+
 	// 4. Check vault health for liquidation detection
 	runtime.log(`=== Checking Vault Health ===`)
 	const depositorAddress = config.depositorAddress as Address
 	const healthFactor = checkVaultHealth(runtime, evmClient, depositorAddress)
 
-	// Health factor is scaled by 1e18 (100 = 1e20, meaning 100% healthy)
-	// If health factor < 100 (1e20), the vault is liquidatable
-	const LIQUIDATION_THRESHOLD = BigInt(100) * BigInt(10 ** 18) // 100 * 1e18
-	const isLiquidatable = healthFactor < LIQUIDATION_THRESHOLD && healthFactor > BigInt(0)
+	// CDPCore health factor is integer basis points where:
+	// - 100 = exactly at MCR threshold
+	// - <100 = liquidatable
+	const LIQUIDATION_THRESHOLD = BigInt(100)
+	const isLiquidatable = healthFactor > BigInt(0) && healthFactor < LIQUIDATION_THRESHOLD
 
 	runtime.log(`Depositor: ${depositorAddress}`)
 	runtime.log(`Health Factor: ${healthFactor.toString()}`)
@@ -431,6 +517,7 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 		btcPriceUsd: btcPriceUsd.toString(),
 		processed: attestedCount,
 		results,
+		snapshot,
 		liquidationStatus: {
 			depositor: depositorAddress,
 			healthFactor: healthFactor.toString(),

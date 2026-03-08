@@ -22,6 +22,29 @@ contract CDPCore is Ownable {
         address depositor; // EVM address that owns this vault
     }
 
+    /// @notice Extended attestation format with optional requested auto-mint amount.
+    struct VaultAttestationV2 {
+        bytes32 txid; // Bitcoin txid (32 bytes)
+        uint64 amountSat; // BTC amount in satoshis
+        uint32 blockHeight; // Bitcoin block height of confirmation
+        uint256 btcPriceUsd; // BTC/USD price (8 decimals from Chainlink)
+        uint256 timestamp; // Attestation timestamp
+        address depositor; // EVM address that owns this vault
+        uint256 mintAmountUsd; // Optional requested mint amount (18 decimals)
+    }
+
+    /// @notice Snapshot report format for vault collateral synchronization.
+    struct VaultSnapshotReportV3 {
+        bytes32 reportKind; // Must match VAULT_SNAPSHOT_REPORT_KIND
+        address depositor;
+        uint256 collateralSat; // Authoritative confirmed UTXO sum at vault address
+        uint256 btcPriceUsd; // BTC/USD price (8 decimals)
+        uint256 timestamp;
+        uint256 mintAmountUsd; // Optional requested auto-mint amount
+        uint256 reserved; // Reserved for future use, must be 0
+        uint256 version; // Reserved for future use, currently 1
+    }
+
     /// @notice User vault state
     struct Vault {
         uint256 collateralSat; // Total attested BTC in satoshis
@@ -44,6 +67,7 @@ contract CDPCore is Ownable {
 
     /// @notice Satoshis per BTC
     uint256 public constant SATS_PER_BTC = 1e8;
+    bytes32 public constant VAULT_SNAPSHOT_REPORT_KIND = keccak256("BTCUSD_VAULT_SNAPSHOT_V1");
 
     // ============ State ============
 
@@ -72,6 +96,10 @@ contract CDPCore is Ownable {
     event VaultLiquidated(address indexed user, address indexed liquidator, uint256 debtCleared);
     event KeystoneForwarderSet(address indexed forwarder, bool allowed);
     event WorkflowOwnerSet(address indexed owner, bool allowed);
+    event AutoMintOnAttestation(address indexed user, uint256 requestedAmountUsd, uint256 mintedAmountUsd, uint256 newDebt);
+    event VaultSnapshotSynced(
+        address indexed user, uint256 previousCollateralSat, uint256 newCollateralSat, uint256 btcPriceUsd, uint256 timestamp
+    );
 
     // ============ Errors ============
 
@@ -85,6 +113,7 @@ contract CDPCore is Ownable {
     error VaultHealthy();
     error ZeroAmount();
     error ZeroAddress();
+    error InvalidReportFormat();
 
     // ============ Modifiers ============
 
@@ -138,8 +167,33 @@ contract CDPCore is Ownable {
             revert UnauthorizedWorkflowOwner(workflowOwner);
         }
 
-        // Decode the attestation
-        VaultAttestation memory attestation = abi.decode(report, (VaultAttestation));
+        // Decode report versions:
+        // - V1: (txid, amountSat, blockHeight, btcPriceUsd, timestamp, depositor)
+        // - V2: V1 + mintAmountUsd
+        // - V3 Snapshot: (reportKind, depositor, collateralSat, btcPriceUsd, timestamp, mintAmountUsd, reserved, version)
+        VaultAttestation memory attestation;
+        uint256 requestedMintAmountUsd = 0;
+        if (report.length == 32 * 8) {
+            VaultSnapshotReportV3 memory snapshot = abi.decode(report, (VaultSnapshotReportV3));
+            if (snapshot.reportKind != VAULT_SNAPSHOT_REPORT_KIND) revert InvalidReportFormat();
+            _applySnapshot(snapshot);
+            return;
+        } else if (report.length == 32 * 6) {
+            attestation = abi.decode(report, (VaultAttestation));
+        } else if (report.length == 32 * 7) {
+            VaultAttestationV2 memory attestationV2 = abi.decode(report, (VaultAttestationV2));
+            attestation = VaultAttestation({
+                txid: attestationV2.txid,
+                amountSat: attestationV2.amountSat,
+                blockHeight: attestationV2.blockHeight,
+                btcPriceUsd: attestationV2.btcPriceUsd,
+                timestamp: attestationV2.timestamp,
+                depositor: attestationV2.depositor
+            });
+            requestedMintAmountUsd = attestationV2.mintAmountUsd;
+        } else {
+            revert InvalidReportFormat();
+        }
 
         // Check for double-attestation
         if (attestedTxids[attestation.txid]) {
@@ -155,6 +209,13 @@ contract CDPCore is Ownable {
         vault.lastAttested = attestation.timestamp;
         vault.lastBtcPrice = attestation.btcPriceUsd;
         vault.active = true;
+
+        // Optional auto-mint path driven by workflow report.
+        // Requested amount is safely capped by available debt capacity.
+        if (requestedMintAmountUsd > 0) {
+            uint256 mintedAmount = _mintUpToCapacity(attestation.depositor, requestedMintAmountUsd);
+            emit AutoMintOnAttestation(attestation.depositor, requestedMintAmountUsd, mintedAmount, vault.debtUsd);
+        }
 
         emit VaultAttested(
             attestation.depositor,
@@ -308,5 +369,44 @@ contract CDPCore is Ownable {
         // hf = (collateralUsd * 10000) / (debtUsd * MCR)
         // Result is basis points where 100 = exactly at MCR
         return (collateralUsd * 10000) / (debtUsd * MCR);
+    }
+
+    /// @notice Mint up to available vault capacity for the user.
+    /// @dev Caps minting at the max debt allowed by MCR; returns actual minted amount.
+    function _mintUpToCapacity(address user, uint256 requestedAmountUsd) internal returns (uint256 mintedAmountUsd) {
+        Vault storage vault = vaults[user];
+        if (requestedAmountUsd == 0) return 0;
+
+        uint256 collateralUsd = (vault.collateralSat * vault.lastBtcPrice * 1e10) / SATS_PER_BTC;
+        uint256 maxDebtUsd = (collateralUsd * 100) / MCR;
+        if (maxDebtUsd <= vault.debtUsd) return 0;
+
+        uint256 availableCapacity = maxDebtUsd - vault.debtUsd;
+        mintedAmountUsd = requestedAmountUsd > availableCapacity ? availableCapacity : requestedAmountUsd;
+        if (mintedAmountUsd == 0) return 0;
+
+        vault.debtUsd += mintedAmountUsd;
+        btcUsd.mint(user, mintedAmountUsd);
+
+        emit BtcUSDMinted(user, mintedAmountUsd, vault.debtUsd);
+    }
+
+    function _applySnapshot(VaultSnapshotReportV3 memory snapshot) internal {
+        Vault storage vault = vaults[snapshot.depositor];
+        uint256 previousCollateral = vault.collateralSat;
+
+        vault.collateralSat = snapshot.collateralSat;
+        vault.lastBtcPrice = snapshot.btcPriceUsd;
+        vault.lastAttested = snapshot.timestamp;
+        vault.active = snapshot.collateralSat > 0 || vault.debtUsd > 0;
+
+        emit VaultSnapshotSynced(
+            snapshot.depositor, previousCollateral, snapshot.collateralSat, snapshot.btcPriceUsd, snapshot.timestamp
+        );
+
+        if (snapshot.mintAmountUsd > 0) {
+            uint256 mintedAmount = _mintUpToCapacity(snapshot.depositor, snapshot.mintAmountUsd);
+            emit AutoMintOnAttestation(snapshot.depositor, snapshot.mintAmountUsd, mintedAmount, vault.debtUsd);
+        }
     }
 }

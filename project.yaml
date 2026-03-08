@@ -21,7 +21,7 @@ default: &default
     - chain-name: ethereum-testnet-sepolia
       url: https://ethereum-sepolia-rpc.publicnode.com
     - chain-name: ethereum-testnet-sepolia-base-1
-      url: https://base-sepolia-rpc.publicnode.com
+      url: https://base-sepolia.g.alchemy.com/v2/ZZES3RX8OV5eQZY6QUl8u
 
 staging-settings: *default
 

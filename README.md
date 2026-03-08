@@ -8,7 +8,30 @@
 
 ## Overview
 
-btcUSD enables users to deposit Bitcoin on the Bitcoin network and mint USD-pegged stablecoins on EVM chains. The system uses **Chainlink CRE** (Chainlink Runtime Environment) for trustless Bitcoin deposit verification, **Chainlink Price Feeds** for real-time BTC/USD pricing, and is **CCIP-ready** for cross-chain bridging.
+btcUSD enables users to deposit Bitcoin on the Bitcoin network and mint USD-pegged stablecoins on any EVM chain. The system uses **Chainlink CRE** (Chainlink Runtime Environment) for trustless Bitcoin deposit verification and **Chainlink Price Feeds** for real-time BTC/USD pricing. Multi-chain support is built in — deploy on any chain and update `config.json`.
+
+## Submission Summary
+
+### Problem
+
+BTC-backed stablecoins typically require centralized custody or trusted bridge operators, introducing custodial and counterparty risk.
+
+### Solution
+
+btcUSD uses Chainlink CRE to attest confirmed Bitcoin UTXOs and update on-chain collateral state in `CDPCore`, enabling overcollateralized stablecoin minting on Base Sepolia.
+
+### How CRE Is Used
+
+- Fetch Bitcoin UTXOs (HTTP capability)
+- Read BTC/USD and vault state (EVM read capability)
+- Generate DON-signed attestation reports (`runtime.report`)
+- Submit reports on-chain through Keystone Forwarder (EVM write/report capability)
+
+### Submission Artifacts
+
+- Submission draft: [`submission.md`](submission.md)
+- Public repo: `https://github.com/FrankiePower/bitcoin-backed`
+- Demo video: `TBD (to be added before final submission)`
 
 ### Key Features
 
@@ -17,7 +40,7 @@ btcUSD enables users to deposit Bitcoin on the Bitcoin network and mint USD-pegg
 - **Real-time Pricing**: Chainlink BTC/USD Price Feed for accurate collateral valuation
 - **CDP Mechanics**: 150% minimum collateral ratio with liquidation support
 - **Liquidation Detection**: Workflow monitors vault health and flags undercollateralized positions
-- **CCIP Ready**: `IBurnMintERC20` interface for burn-and-mint cross-chain bridging
+- **Multi-Chain**: Deploy on any EVM chain by updating `config.json` — no code changes needed
 - **Fully On-Chain**: All CDP state managed transparently on Base Sepolia
 
 ## Architecture
@@ -140,13 +163,12 @@ sequenceDiagram
 
 ## Chainlink Integration
 
-This project uses **three Chainlink services**:
+This project uses **two Chainlink services**:
 
 | Service | Purpose | Implementation |
 |---------|---------|----------------|
 | **Chainlink CRE** | Bitcoin UTXO attestation workflow | [`btcusd-workflow/main.ts`](btcusd-workflow/main.ts) |
 | **Chainlink Price Feeds** | Real-time BTC/USD oracle | [`main.ts:170-199`](btcusd-workflow/main.ts#L170-L199) |
-| **Chainlink CCIP** | Cross-chain btcUSD bridging | [`btcUSD.sol`](contracts/src/btcUSD.sol) |
 
 ### Files Using Chainlink
 
@@ -154,10 +176,9 @@ This project uses **three Chainlink services**:
 |------|-----------------|
 | [`btcusd-workflow/main.ts`](btcusd-workflow/main.ts) | CRE workflow, HTTPClient, EVMClient, consensusIdenticalAggregation, Price Feed read, liquidation monitoring |
 | [`btcusd-workflow/contracts/abi/PriceFeedAggregator.ts`](btcusd-workflow/contracts/abi/PriceFeedAggregator.ts) | Chainlink Price Feed ABI (latestAnswer) |
-| [`contracts/src/btcUSD.sol`](contracts/src/btcUSD.sol) | IBurnMintERC20 interface for CCIP TokenPool compatibility |
-| [`contracts/src/CDPCore.sol`](contracts/src/CDPCore.sol) | Receives CRE attestations via Keystone Forwarder, ILogAutomation interface |
+| [`contracts/src/btcUSD.sol`](contracts/src/btcUSD.sol) | ERC20 token with mint/burn role system for CDPCore |
+| [`contracts/src/CDPCore.sol`](contracts/src/CDPCore.sol) | Receives CRE attestations via Keystone Forwarder |
 | [`contracts/script/ConfigureCDPCore.s.sol`](contracts/script/ConfigureCDPCore.s.sol) | Configures Keystone Forwarder and workflow owner addresses |
-| [`contracts/script/CCIPBridgeDemo.s.sol`](contracts/script/CCIPBridgeDemo.s.sol) | CCIP burn-and-mint bridging demonstration |
 
 ### CRE Workflow Capabilities Used
 
@@ -237,25 +258,18 @@ If Health Factor < 100 → Position is liquidatable
 
 | Contract | Address | Explorer |
 |----------|---------|----------|
-| **BtcUSD** | `0xA5FCD5d200f949F7e78D4c7771F602aa4B0e387A` | [View](https://sepolia.basescan.org/address/0xA5FCD5d200f949F7e78D4c7771F602aa4B0e387A) |
-| **CDPCore** | `0x4F545CE997b7A5fEA9101053596D4834Bc882c7f` | [View](https://sepolia.basescan.org/address/0x4F545CE997b7A5fEA9101053596D4834Bc882c7f) |
+| **BtcUSD** | `0x5a458544342eEaA64BB6b9940F826cbd74d62D8E` | [View](https://sepolia.basescan.org/address/0x5a458544342eEaA64BB6b9940F826cbd74d62D8E) |
+| **CDPCore** | `0x25cb5d05f22f218818Bd950969fCd6Ba0E196FaC` | [View](https://sepolia.basescan.org/address/0x25cb5d05f22f218818Bd950969fCd6Ba0E196FaC) |
 
 ### Configuration
 
 | Setting | Value |
 |---------|-------|
-| **Vault Address** | `tb1q0key5kvy054ke6xt0aaj4k0gwk2jyuhu3h2jfy` |
+| **Vault Address** | `tb1qvwgjgrxvq3nztnz5tpwquxx30ps66vcx0jl7lh` |
 | **Keystone Forwarder** | `0x82300bd7c3958625581cc2F77bC6464dcEcDF3e5` |
 | **Workflow Owner** | `0x8966caCc8E138ed0a03aF3Aa4AEe7B79118C420E` |
 | **BTC/USD Feed** | Chainlink Base Sepolia |
 | **Chain Selector** | `10344971235874465080` (Base Sepolia) |
-
-### CCIP Configuration (Ready for Bridging)
-
-| Chain | Selector | Router |
-|-------|----------|--------|
-| **Base Sepolia** | `10344971235874465080` | CCIP Router |
-| **Arbitrum Sepolia** | `3478487238524512106` | `0x2a9C5afB0d0e4BAb2BCdaE109EC4b0c4Be15a165` |
 
 ## Quick Start
 
@@ -304,7 +318,7 @@ Initializing...
 Compiling workflow...
 ✓ Workflow compiled
 [USER LOG] === btcUSD Bitcoin Attestation Workflow ===
-[USER LOG] Vault address: tb1q0key5kvy054ke6xt0aaj4k0gwk2jyuhu3h2jfy
+[USER LOG] Vault address: tb1qvwgjgrxvq3nztnz5tpwquxx30ps66vcx0jl7lh
 [USER LOG] Found 2 confirmed UTXOs with 6+ confirmations
 [USER LOG] BTC/USD price from Chainlink: 9500000000000 (8 decimals)
 [USER LOG] === Checking Vault Health ===
@@ -339,35 +353,20 @@ Health factor: 158333333333333333333
 === Demo Complete ===
 ```
 
-### Run CCIP Bridge Demo
-
-```bash
-cd contracts
-
-# Demonstrates btcUSD burn-and-mint CCIP capability
-forge script script/CCIPBridgeDemo.s.sol:CCIPBridgeDemo \
-  --rpc-url https://base-sepolia-rpc.publicnode.com \
-  --broadcast
-```
-
 ## Smart Contracts
 
 ### btcUSD Token
 
-ERC20 stablecoin with CCIP burn-and-mint support:
+ERC20 stablecoin with role-based mint/burn access:
 
 ```solidity
 contract BtcUSD is ERC20, ERC20Burnable, Ownable, IERC165 {
-    // Minter/Burner roles for CDPCore and CCIP TokenPools
+    // Minter/Burner roles for CDPCore (and future cross-chain pools)
     mapping(address => bool) private _minters;
     mapping(address => bool) private _burners;
 
-    // CCIP TokenPool compatibility
     function mint(address account, uint256 amount) external onlyMinter;
     function burnFrom(address account, uint256 amount) public override onlyBurner;
-
-    // ERC165 for CCIP detection
-    function supportsInterface(bytes4 interfaceId) public pure override returns (bool);
 }
 ```
 
@@ -413,7 +412,6 @@ contract CDPCore {
 | Price oracle | ✅ Working | Chainlink BTC/USD feed (8 decimals) |
 | CDP mechanics | ✅ Working | 150% MCR, mint/repay/liquidate |
 | Liquidation detection | ✅ Working | Workflow monitors vault health factor |
-| CCIP bridging | ✅ Ready | IBurnMintERC20 interface implemented |
 | DON consensus | ✅ Working | consensusIdenticalAggregation on UTXOs |
 | **BTC custody enforcement** | ⚠️ **Not implemented** | See below |
 
@@ -474,10 +472,10 @@ For trustless BTC custody, future versions would implement:
 |---------|--------|---------------|---------------|---------------|
 | **Collateral** | Native BTC | stETH (not BTC) | BTC (RSK) | ETH derivatives |
 | **Oracle** | Chainlink CRE | Chainlink | Custom | Multiple |
-| **Chain** | Any EVM (via CCIP) | Ethereum | RSK only | Ethereum |
+| **Chain** | Any EVM (via config) | Ethereum | RSK only | Ethereum |
 | **Min Collateral** | 150% | 110% | 110% | Variable |
 | **Custody** | Attestation (v1) | Smart contract | Federated | Custodial |
-| **Cross-chain** | CCIP ready | No | No | No |
+| **Cross-chain** | Config-based deploy | No | No | No |
 
 ## Project Structure
 
@@ -494,8 +492,7 @@ bitcoin-backed/
 │   └── script/
 │       ├── Deploy.s.sol          # Deployment script
 │       ├── ConfigureCDPCore.s.sol # Keystone Forwarder setup
-│       ├── DemoFlow.s.sol        # End-to-end demo
-│       └── CCIPBridgeDemo.s.sol  # CCIP bridging demo
+│       └── DemoFlow.s.sol        # End-to-end demo
 ├── project.yaml                  # CRE project config
 └── README.md                     # This file
 ```
@@ -506,15 +503,14 @@ bitcoin-backed/
 - [x] Bitcoin UTXO attestation via mempool.space
 - [x] Chainlink Price Feed integration
 - [x] CDPCore contract with mint/repay/liquidate
-- [x] btcUSD ERC20 with CCIP compatibility
+- [x] Auto-mint via V2 report (single tx deposit + mint)
+- [x] V3 Snapshot sync for collateral reduction
 - [x] Liquidation detection in workflow
-- [x] CCIP bridge demo
 - [ ] Production deployment on mainnet
-- [ ] Multi-depositor support
+- [ ] Multi-depositor support (per-user vault addresses)
 - [ ] P2WSH custody enforcement
 - [ ] DLC integration for trustless locking
-- [ ] CCIP TokenPool registration
-- [ ] Governance token
+- [ ] Cross-chain token bridging
 
 ## Testing
 
@@ -534,7 +530,6 @@ forge test -vvv
 
 - [Chainlink CRE Documentation](https://docs.chain.link/cre)
 - [Chainlink Price Feeds](https://docs.chain.link/data-feeds)
-- [Chainlink CCIP](https://docs.chain.link/ccip)
 - [DLC Specifications](https://github.com/discreetlogcontracts/dlcspecs) - Future custody model
 - [mempool.space API](https://mempool.space/docs/api) - Bitcoin UTXO data
 
@@ -554,7 +549,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- **Chainlink** for CRE, Price Feeds, and CCIP infrastructure
+- **Chainlink** for CRE and Price Feeds infrastructure
 - **mempool.space** for Bitcoin Testnet4 API
 - **Base** for EVM execution environment
 - **Foundry** for Solidity development toolkit

@@ -10,8 +10,8 @@ import {BtcUSD} from "../src/btcUSD.sol";
  * @notice Demonstrates the full btcUSD flow by simulating CRE attestations
  */
 contract DemoFlowScript is Script {
-    address constant CDP_CORE = 0x4F545CE997b7A5fEA9101053596D4834Bc882c7f;
-    address constant BTC_USD = 0xA5FCD5d200f949F7e78D4c7771F602aa4B0e387A;
+    address constant CDP_CORE = 0x25cb5d05f22f218818Bd950969fCd6Ba0E196FaC;
+    address constant BTC_USD = 0x5a458544342eEaA64BB6b9940F826cbd74d62D8E;
 
     function run() external {
         uint256 pk = vm.envUint("CRE_ETH_PRIVATE_KEY");
@@ -53,19 +53,40 @@ contract DemoFlowScript is Script {
         (uint256 collateral,,,,) = cdpCore.getVault(user);
         console.log("Total collateral:", collateral, "sats");
 
-        // Mint btcUSD ($60 worth, safe under 150% MCR)
+        // Mint btcUSD to max capacity (at 150% MCR, max = collateral_usd / 1.5)
         uint256 mintAmount = 60 * 1e18;
         cdpCore.mintBtcUsd(mintAmount);
         console.log("Minted: 60 btcUSD");
 
-        // Final state
-        uint256 balance = btcUsd.balanceOf(user);
-        uint256 hf = cdpCore.healthFactor(user);
-        console.log("btcUSD balance:", balance / 1e18);
-        console.log("Health factor:", hf);
+        uint256 balanceBefore = btcUsd.balanceOf(user);
+        uint256 hfBefore = cdpCore.healthFactor(user);
+        console.log("btcUSD balance:", balanceBefore / 1e18);
+        console.log("Health factor (before liquidation):", hfBefore);
+
+        // === Simulate Vault Withdrawal: snapshot with 0 collateral ===
+        // This mimics the workflow detecting all BTC was spent out of the vault
+        console.log("");
+        console.log("=== Simulating Vault Withdrawal (Snapshot with 0 collateral) ===");
+        _submitSnapshot(cdpCore, user, 0);
+        console.log("Snapshot submitted: collateral = 0 sats");
+
+        // Check health factor — should now be < 100 (liquidatable)
+        uint256 hfAfter = cdpCore.healthFactor(user);
+        bool liquidatable = hfAfter < 100 && hfAfter > 0;
+        console.log("Health factor (after withdrawal):", hfAfter);
+        console.log("Liquidatable:", liquidatable);
 
         vm.stopBroadcast();
+        console.log("");
         console.log("=== Demo Complete ===");
+    }
+
+    function _submitSnapshot(CDPCore cdpCore, address user, uint256 collateralSat) internal {
+        bytes32 reportKind = keccak256("BTCUSD_VAULT_SNAPSHOT_V1");
+        uint256 btcPrice = 9500000000000; // $95,000
+        bytes memory metadata = abi.encodePacked(user, bytes10(0));
+        bytes memory report = abi.encode(reportKind, user, collateralSat, btcPrice, block.timestamp, uint256(0), uint256(0), uint256(1));
+        cdpCore.onReport(metadata, report);
     }
 
     function _submitAttestation(
