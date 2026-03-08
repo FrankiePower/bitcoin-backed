@@ -1,8 +1,8 @@
 {
-  "schedule": "0 */2 * * * *",
-  "vaultAddress": "tb1q0key5kvy054ke6xt0aaj4k0gwk2jyuhu3h2jfy",
+  "schedule": "*/30 * * * * *",
+  "vaultAddress": "tb1qvwgjgrxvq3nztnz5tpwquxx30ps66vcx0jl7lh",
   "depositorAddress": "0x8966caCc8E138ed0a03aF3Aa4AEe7B79118C420E",
-  "confirmationsRequired": 6,
+  "confirmationsRequired": 1,
   "enableVaultSnapshotSync": true,
   "autoMintAmountUsdWei": "1000000000000000000000000",
   "network": {

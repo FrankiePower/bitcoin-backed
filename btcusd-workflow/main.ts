@@ -54,9 +54,9 @@ const configSchema = z.object({
 	schedule: z.string(), // Cron schedule, e.g., "0 */2 * * * *" (every 2 min)
 	vaultAddress: z.string(), // Bitcoin testnet vault address to monitor
 	depositorAddress: z.string(), // EVM address of the depositor (for demo: single user)
-	confirmationsRequired: z.number().min(1).default(6), // Minimum confirmations
-	enableVaultSnapshotSync: z.boolean().default(false), // Requires CDPCore with V3 snapshot support
-	autoMintAmountUsdWei: z.string().default('0'), // Optional auto-mint amount requested per new attestation (18 decimals)
+	confirmationsRequired: z.number().min(1), // Minimum confirmations
+	enableVaultSnapshotSync: z.boolean(), // Requires CDPCore with V3 snapshot support
+	autoMintAmountUsdWei: z.string(), // Optional auto-mint amount requested per new attestation (18 decimals)
 	network: z.object({
 		chainName: z.string(), // e.g., "ethereum-testnet-sepolia-base-1"
 		cdpCoreAddress: z.string(), // CDPCore contract address on Base Sepolia
@@ -209,7 +209,7 @@ const readBtcUsdPrice = (
 		throw new Error(`BTC/USD price feed is stale: ${age}s old (max ${PRICE_STALENESS_SECONDS}s)`)
 	}
 
-	runtime.log(`BTC/USD price from Chainlink: ${answer.toString()} (8 decimals), age: ${age}s`)
+	runtime.log(`BTC/USD price: $${(Number(answer) / 1e8).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (raw: ${answer.toString()}, age: ${age}s)`)
 	return answer
 }
 
@@ -271,6 +271,10 @@ const checkVaultHealth = (
 			blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
 		})
 		.result()
+
+	// Empty response means the contract isn't readable at the finalized block yet (e.g. just deployed).
+	// Return 0 — treated downstream as "no active position", safe to skip liquidation.
+	if (!resp.data || resp.data.length === 0) return BigInt(0)
 
 	const healthFactor = decodeFunctionResult({
 		abi: CDPCore,
@@ -562,14 +566,18 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 	const healthFactor = checkVaultHealth(runtime, evmClient, depositorAddress)
 
 	// CDPCore health factor is integer basis points where:
-	// - 100 = exactly at MCR threshold
+	// - type(uint256).max = no debt (safe to skip)
+	// - 0 = uninitialized / unreadable vault
+	// - >=100 = healthy (at or above 150% MCR)
 	// - <100 = liquidatable
+	const UINT256_MAX = 2n ** 256n - 1n
 	const LIQUIDATION_THRESHOLD = BigInt(100)
-	const isLiquidatable = healthFactor > BigInt(0) && healthFactor < LIQUIDATION_THRESHOLD
+	const hasNoDebt = healthFactor === BigInt(0) || healthFactor === UINT256_MAX
+	const isLiquidatable = !hasNoDebt && healthFactor < LIQUIDATION_THRESHOLD
 
+	const hfDisplay = healthFactor === UINT256_MAX ? '∞ (no debt)' : healthFactor.toString()
 	runtime.log(`Depositor: ${depositorAddress}`)
-	runtime.log(`Health Factor: ${healthFactor.toString()}`)
-	runtime.log(`Liquidatable: ${isLiquidatable}`)
+	runtime.log(`Health Factor: ${hfDisplay} | Liquidatable: ${isLiquidatable}`)
 
 	let liquidationTxHash: string | undefined
 	if (isLiquidatable) {
@@ -579,13 +587,13 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 		} catch (error) {
 			runtime.log(`Failed to submit liquidation: ${error}`)
 		}
-	} else if (healthFactor === BigInt(0)) {
+	} else if (hasNoDebt) {
 		runtime.log(`No active debt position for this depositor.`)
 	} else {
 		runtime.log(`✓ Vault is healthy (above 150% MCR)`)
 	}
 
-	return safeJsonStringify({
+	const summary = {
 		status: 'complete',
 		vaultAddress: config.vaultAddress,
 		btcPriceUsd: btcPriceUsd.toString(),
@@ -598,7 +606,10 @@ const processAttestations = (runtime: Runtime<Config>): string => {
 			isLiquidatable,
 			liquidationTxHash,
 		},
-	})
+	}
+	runtime.log(`=== Summary ===\n${safeJsonStringify(summary)}`)
+
+	return `complete | attested=${attestedCount} | btcUsd=$${(Number(btcPriceUsd) / 1e8).toFixed(2)} | health=${hfDisplay} | snapshot=${snapshot?.status ?? 'disabled'}`
 }
 
 // ============ Handlers ============
@@ -607,7 +618,7 @@ const onCronTrigger = (runtime: Runtime<Config>, payload: CronPayload): string =
 	if (!payload.scheduledExecutionTime) {
 		throw new Error('Scheduled execution time is required')
 	}
-	runtime.log(`Cron triggered at: ${payload.scheduledExecutionTime}`)
+	runtime.log(`Running CronTrigger`)
 	return processAttestations(runtime)
 }
 

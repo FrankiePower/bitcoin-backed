@@ -1,12 +1,13 @@
 /**
  * send-btc.ts
- * Sweeps all confirmed UTXOs from a P2WPKH testnet4 address to a recipient.
- * Used to simulate a vault withdrawal and trigger liquidation detection.
+ * Sends BTC from a P2WPKH testnet4 address to a recipient.
+ * Used to deposit to the vault or sweep it to trigger liquidation.
  *
  * Usage:
- *   bun run scripts/send-btc.ts <SENDER_WIF> <RECIPIENT_ADDRESS> [AMOUNT_SATS]
+ *   bun run scripts/send-btc.ts <SENDER_WIF> <RECIPIENT_ADDRESS> [AMOUNT_SATS|--sweep]
  *
- * If AMOUNT_SATS is omitted, sweeps entire balance (minus fee).
+ * If AMOUNT_SATS is omitted, sends 25% of balance (keeps the rest for future tests).
+ * Pass --sweep to send the entire balance minus fee (for liquidation testing).
  */
 
 import * as bitcoin from 'bitcoinjs-lib'
@@ -53,7 +54,7 @@ async function broadcast(txHex: string): Promise<string> {
   return await res.text()
 }
 
-async function send(senderWif: string, recipientAddress: string, amountSats?: number) {
+async function send(senderWif: string, recipientAddress: string, amountSats?: number, sweep = false) {
   const keyPair = ECPair.fromWIF(senderWif, network)
   const { address: senderAddress } = bitcoin.payments.p2wpkh({
     pubkey: Buffer.from(keyPair.publicKey),
@@ -76,7 +77,8 @@ async function send(senderWif: string, recipientAddress: string, amountSats?: nu
   const estimatedSize = Math.ceil(10.5 + utxos.length * 68 + 31)
   const fee = Math.ceil(estimatedSize * feeRate)
 
-  const sendAmount = amountSats !== undefined ? amountSats : totalInput - fee
+  // Default to 25% of balance; --sweep sends full balance minus fee
+  const sendAmount = amountSats !== undefined ? amountSats : sweep ? totalInput - fee : Math.floor((totalInput - fee) * 0.25)
   if (sendAmount <= 0 || totalInput - sendAmount < fee) {
     throw new Error(
       `Insufficient funds. Total: ${totalInput} sats, fee: ${fee} sats, requested: ${sendAmount} sats`
@@ -122,12 +124,15 @@ async function send(senderWif: string, recipientAddress: string, amountSats?: nu
 const [, , senderWif, recipientAddress, amountArg] = process.argv
 
 if (!senderWif || !recipientAddress) {
-  console.error('Usage: bun run scripts/send-btc.ts <SENDER_WIF> <RECIPIENT_ADDRESS> [AMOUNT_SATS]')
-  console.error('  Omit AMOUNT_SATS to sweep full balance.')
+  console.error('Usage: bun run scripts/send-btc.ts <SENDER_WIF> <RECIPIENT_ADDRESS> [AMOUNT_SATS|--sweep]')
+  console.error('  Omit AMOUNT_SATS to send 25% of balance (default for testing).')
+  console.error('  Pass --sweep to send the full balance minus fee.')
   process.exit(1)
 }
 
-send(senderWif, recipientAddress, amountArg ? parseInt(amountArg) : undefined).catch((err) => {
+const isSweep = amountArg === '--sweep'
+const amount = !isSweep && amountArg ? parseInt(amountArg) : undefined
+send(senderWif, recipientAddress, amount, isSweep).catch((err) => {
   console.error('Error:', err.message)
   process.exit(1)
 })
